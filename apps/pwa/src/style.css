@@ -1,0 +1,131 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color-scheme: dark;
+  background: #0e1211;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+button,
+input {
+  font: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.single-screen {
+  width: 100%;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background: #0e1211;
+}
+.single-record {
+  width: min(42vw, 180px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border: 1px solid #d4f7d8;
+  border-radius: 50%;
+  color: #26382b;
+  background: radial-gradient(circle at 38% 28%, #daf7d4, #b6dcae 78%);
+  box-shadow: 0 0 80px rgba(176, 224, 185, 0.08);
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    background 220ms ease,
+    box-shadow 220ms ease;
+}
+.single-record svg {
+  width: 29%;
+  height: 29%;
+  stroke-width: 1.65;
+}
+.single-record:active:not(:disabled) {
+  transform: scale(0.95);
+}
+.single-record:focus-visible {
+  outline: 3px solid #d4f7d8;
+  outline-offset: 8px;
+}
+.single-record:disabled {
+  cursor: default;
+}
+.single-record.is-recording {
+  color: #f4fff6;
+  background: radial-gradient(circle at 35% 25%, #578f6d, #29533c 82%);
+  box-shadow:
+    0 0 0 18px rgba(126, 191, 145, 0.05),
+    0 0 0 38px rgba(126, 191, 145, 0.025);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.single-record.is-working {
+  opacity: 0.65;
+}
+.single-record.is-failed {
+  border-color: #81544c;
+  background: #382522;
+  color: #edb7ac;
+}
+.single-spinner {
+  width: 42px;
+  color: #b6dcae;
+  animation: spin 1s linear infinite;
+}
+.pair-only {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pair-only input {
+  width: 210px;
+  padding: 16px 18px 16px 26px;
+  border: 1px solid #35443a;
+  border-radius: 18px;
+  outline: none;
+  background: #151b19;
+  color: #e9f0eb;
+  font-size: 25px;
+  letter-spacing: 8px;
+  text-align: center;
+}
+.pair-only button {
+  width: 60px;
+  height: 60px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: #b6dcae;
+  color: #26382b;
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes pulse {
+  50% {
+    transform: scale(1.035);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

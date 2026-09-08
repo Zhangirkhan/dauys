@@ -1,0 +1,39 @@
+services:
+  whisper:
+    image: onerahmet/openai-whisper-asr-webservice:latest
+    restart: unless-stopped
+    environment:
+      ASR_MODEL: small
+      ASR_ENGINE: faster_whisper
+    volumes:
+      - whisper-cache:/root/.cache
+  server:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - whisper
+    ports:
+      - "127.0.0.1:18787:8787"
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      STT_PROVIDER: whisper
+      WHISPER_URL: http://whisper:9000
+      INTENT_PROVIDER: deepseek
+      COOKIE_SECURE: "true"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+volumes:
+  whisper-cache:

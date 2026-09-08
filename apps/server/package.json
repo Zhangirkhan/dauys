@@ -1,0 +1,8 @@
+{
+  "name": "@voice/server",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@voice/shared": "workspace:*"
+  }
+}

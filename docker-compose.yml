@@ -1,0 +1,24 @@
+services:
+  server:
+    build: .
+    ports:
+      - "127.0.0.1:8787:8787"
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      DATABASE_URL: /app/data/assistant.db
+      STT_PROVIDER: mock
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 3s
+      retries: 3

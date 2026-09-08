@@ -1,0 +1,56 @@
+{
+  "projects": [
+    {
+      "id": "cascade-otp",
+      "name": "Cascade OTP",
+      "description": "Сервис каскадной доставки OTP через WhatsApp, Telegram и SMS",
+      "aliases": [
+        "каскад",
+        "cascade",
+        "отп",
+        "otp",
+        "сервис сообщений",
+        "сервис авторизации"
+      ],
+      "path": "/Users/USERNAME/Projects/cascade",
+      "defaultApplication": "Cursor",
+      "urls": {
+        "production": "https://cascade.kz",
+        "local": "http://localhost:3000"
+      },
+      "scenarios": {
+        "start_work": [
+          {
+            "action": "open_project",
+            "parameters": {
+              "projectId": "cascade-otp"
+            }
+          },
+          {
+            "action": "open_url",
+            "parameters": {
+              "url": "http://localhost:3000"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "applications": [
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "aliases": ["курсор", "редактор", "IDE"]
+    },
+    {
+      "id": "telegram",
+      "name": "Telegram",
+      "aliases": ["телега", "тг"]
+    },
+    {
+      "id": "safari",
+      "name": "Safari",
+      "aliases": ["сафари", "браузер"]
+    }
+  ]
+}

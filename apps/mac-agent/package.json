@@ -1,0 +1,8 @@
+{
+  "name": "@voice/mac-agent",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@voice/shared": "workspace:*"
+  }
+}
