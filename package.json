@@ -12,7 +12,7 @@
     "dev:pwa": "pnpm --filter @voice/pwa dev",
     "dev:server": "tsx apps/server/src/index.ts",
     "dev:agent": "tsx apps/mac-agent/src/index.ts",
-    "build": "pnpm --filter @voice/pwa build && tsup apps/server/src/index.ts --format esm --platform node --target node24 --out-dir apps/server/dist --clean && tsup apps/mac-agent/src/index.ts --format esm --platform node --target node24 --out-dir apps/mac-agent/dist --clean",
+    "build": "pnpm --filter @voice/pwa build && tsup apps/server/src/index.ts --format esm --platform node --target node24 --out-dir apps/server/dist --clean && tsup apps/mac-agent/src/index.ts --format esm --platform node --target node24 --out-dir apps/mac-agent/dist --clean && node scripts/fix-node-sqlite.mjs apps/server/dist/index.js apps/mac-agent/dist/index.js",
     "start": "node scripts/dev.mjs --production",
     "test": "vitest run",
     "test:browser": "playwright test",
