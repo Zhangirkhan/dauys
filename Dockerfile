@@ -14,14 +14,3 @@ RUN pnpm build
 ENV HOST=0.0.0.0 NODE_ENV=production
 EXPOSE 8787
 CMD ["node", "apps/server/dist/index.js"]
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY apps/pwa/package.json apps/pwa/package.json
-COPY apps/server/package.json apps/server/package.json
-COPY apps/mac-agent/package.json apps/mac-agent/package.json
-COPY packages/shared/package.json packages/shared/package.json
-RUN pnpm install --frozen-lockfile
-COPY . .
-RUN pnpm build
-ENV HOST=0.0.0.0 NODE_ENV=production
-EXPOSE 8787
-CMD ["node", "apps/server/dist/index.js"]
