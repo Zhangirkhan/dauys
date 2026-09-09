@@ -32,7 +32,7 @@ pnpm dev
 | `pnpm lint`              | ESLint                                                        |
 | `pnpm typecheck`         | Проверка всех TypeScript-пакетов                              |
 | `pnpm test`              | Unit + интеграционные тесты, реальные localhost WebSocket     |
-| `pnpm build`             | Production PWA, backend и агент                               |
+| `pnpm build:agent`       | Собрать macOS-бинарник `dist/macos/dauys-agent`               |
 | `pnpm start`             | Собранное приложение: PWA на 8787 + агент                     |
 | `pnpm test:browser`      | Браузерная проверка при работающем `pnpm dev`                 |
 | `node scripts/smoke.mjs` | Health + привязка + текстовая команда через работающий сервер |
@@ -40,6 +40,28 @@ pnpm dev
 Для браузерных тестов используется установленный Google Chrome на macOS. Если его нет, установите браузер тестов: `pnpm exec playwright install chromium`. Тест запускает Chromium в размере iPhone с тестовым аудиоустройством, проверяет MediaRecorder, 20-секундный лимит и отказ в доступе. Это не заменяет проверку физического iPhone/Safari.
 
 После изменения серверных исходников или `.env` перезапустите соответствующий процесс. Vite обновляет интерфейс автоматически.
+
+## Mac-агент как программа
+
+На телефоне открывайте **https://dauys.esl.kz**. На Mac соберите и поставьте агент один раз:
+
+```bash
+pnpm build:agent
+dist/macos/install.sh
+```
+
+Агент ставится в `~/Applications/DauysAgent/`, стартует при входе в систему и сам поднимается после сбоя. Данные — в `~/Library/Application Support/DauysAgent/`, логи — `~/Library/Logs/dauys-agent.log`.
+
+При первом запуске появится диалог секрета (`AGENT_BOOTSTRAP_SECRET` с сервера) и диалог с 8-значным кодом. Код введите на https://dauys.esl.kz. Дальше секрет не нужен.
+
+Поиск файлов на корпоративном диске (`найди на диске …`): создайте персональный MCP-токен на [drive.esl.kz/app/admin/connect](https://drive.esl.kz/app/admin/connect) и положите его в `DRIVE_MCP_TOKEN` или в файл `drive-mcp.token` рядом с данными агента (`~/Library/Application Support/DauysAgent/`). В git токен не кладётся.
+
+```bash
+~/Applications/DauysAgent/dauys-agent --reset   # новая привязка
+~/Applications/DauysAgent/dauys-agent --pair    # новый код
+dist/macos/uninstall.sh                         # остановить
+dist/macos/uninstall.sh --purge                 # ещё и стереть токен
+```
 
 ## Структура и архитектура
 
@@ -258,9 +280,9 @@ https://192.168.1.10:8443 {
 
 | Симптом                         | Решение                                                                                   |
 | ------------------------------- | ----------------------------------------------------------------------------------------- |
-| MacBook не в сети               | Запустить `pnpm dev:agent`, проверить SERVER_PUBLIC_URL, сон Mac, firewall                |
-| Код истёк / использован         | Перезапустить агент и ввести новый код; 5 попыток привязки в минуту                       |
-| Доступ отозван                  | Телефон привязать заново; для агента `pnpm dev:agent -- --reset` (создаёт новую identity) |
+| MacBook не в сети               | Проверить, что агент запущен (`launchctl print gui/$(id -u)/com.dauys.agent` или `pnpm dev:agent`), SERVER_PUBLIC_URL, сон Mac, firewall |
+| Код истёк / использован         | `dauys-agent --pair` или перезапустить агент; 5 попыток привязки в минуту                  |
+| Доступ отозван                  | Телефон привязать заново; для агента `dauys-agent --reset` (создаёт новую identity)        |
 | Ошибка Origin                   | Добавить точный адрес страницы с протоколом и портом в PWA_ORIGIN                         |
 | После привязки снова экран кода | Cookie Secure требует HTTPS; проверить адрес, cookie и прокси                             |
 | Нет микрофона                   | HTTPS/localhost, разрешение сайта, Safari/Chrome, альтернатива — текст                    |

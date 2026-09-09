@@ -2,7 +2,7 @@ import { WebSocket } from "ws";
 import { z } from "zod";
 import type { MacExecutor } from "./executor.js";
 import type { ExecutionLedger } from "./safety.js";
-import type { Logger } from "pino";
+import type { AgentLogger } from "./logger.js";
 export class AgentClient {
   private ws?: WebSocket;
   private stopped = false;
@@ -14,11 +14,12 @@ export class AgentClient {
       token: string;
       executor: MacExecutor;
       ledger: ExecutionLedger;
-      logger: Logger;
+      logger: AgentLogger;
       capabilities?: {
         realActions: boolean;
         shortcuts: Array<{ id: string; name: string }>;
       };
+      onAuthFailure?: () => void;
     },
   ) {}
   connect() {
@@ -88,8 +89,9 @@ export class AgentClient {
       if (res.statusCode === 401 || res.statusCode === 403) {
         this.stopped = true;
         this.o.logger.error(
-          "Токен отозван или неверен. Для новой привязки выполните pnpm dev:agent -- --reset.",
+          "Токен отозван или неверен. Для новой привязки запустите агент с --reset.",
         );
+        this.o.onAuthFailure?.();
       }
       res.resume();
       ws.terminate();

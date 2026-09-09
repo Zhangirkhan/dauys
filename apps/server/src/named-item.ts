@@ -3,6 +3,8 @@ import type {
   Registry,
 } from "../../../packages/shared/src/index.js";
 import { execute } from "./intent.js";
+import { extractSpokenUrl } from "./spoken-url.js";
+import { mentionsDrive } from "../../../packages/shared/src/index.js";
 
 const normalize = (s: string) =>
   s
@@ -37,6 +39,8 @@ function cleanQuery(raw: string) {
 }
 
 export function extractSpokenItem(text: string): SpokenItem | undefined {
+  if (extractSpokenUrl(text)) return undefined;
+  if (mentionsDrive(text)) return undefined;
   let q = normalize(text).replace(/ пожалуйста$/u, "").trim();
   if (!OPEN.test(q)) return undefined;
   q = q
@@ -99,6 +103,14 @@ function withEditor(
   registry: Registry,
 ) {
   const editor = editorFromText(text, registry);
+  if (editor && kind !== "file")
+    return execute(
+      {
+        action: "open_editor_project",
+        parameters: { query, applicationId: editor.id },
+      },
+      "Ищу проект " + query,
+    );
   return execute(
     {
       action: "open_named_item",

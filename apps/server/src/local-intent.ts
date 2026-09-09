@@ -9,6 +9,8 @@ import {
   type IntentResolver,
 } from "./intent.js";
 import { extractSpokenItem } from "./named-item.js";
+import { extractSpokenUrl } from "./spoken-url.js";
+import { extractSpokenDrive } from "../../../packages/shared/src/index.js";
 
 const normalize = (s: string) =>
   s
@@ -16,6 +18,8 @@ const normalize = (s: string) =>
     .replace(/ё/g, "е")
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
+const HOSTISH =
+  /[\p{L}\p{N}-]+\.[\p{L}\p{N}-]+|точка\s+(?:кз|ком|kz|com)|егов|egov|ютуб|youtube/u;
 type Entity = { id: string; name: string; aliases: string[] };
 // Prefer a compound name (BetGPT Mobile) over the shorter name it contains,
 // but keep separate named objects ambiguous rather than choosing one arbitrarily.
@@ -79,6 +83,21 @@ export class LocalIntentResolver implements IntentResolver {
         reason:
           "Это действие запрещено. Можно открыть программу или зарегистрированный проект.",
       };
+    const drive = extractSpokenDrive(pending ? pending.originalText + " " + text : text);
+    if (drive) {
+      if (!drive.query)
+        return {
+          type: "clarification",
+          question: "Какой файл найти на диске? Назовите имя, тип или дату.",
+        };
+      return execute(
+        {
+          action: "search_drive",
+          parameters: { query: drive.query, open: true },
+        },
+        "Ищу на диске: " + drive.query,
+      );
+    }
     if (
       /(?:^| )(?:не|нельзя) (?:откр|запус|включ|закр)|(?:^| )(?:как|зачем|почему) (?:откр|запус|закр)/.test(
         q,
@@ -163,6 +182,15 @@ export class LocalIntentResolver implements IntentResolver {
     const refersBack = /(?:^| )(?:его|ее|этот|тот|последний)(?: |$)/.test(q);
     const asksProject = /проект|поработ|продолж/.test(q);
     const asksSite = /сайт/.test(q);
+    const spokenUrl = extractSpokenUrl(
+      pending ? original + " " + answer : text,
+      registry,
+    );
+    if (spokenUrl && (opening || asksSite || HOSTISH.test(q)))
+      return execute(
+        { action: "open_url", parameters: spokenUrl },
+        "Открываю " + spokenUrl.url,
+      );
     const wantsNewEditor =
       /(?:создай|открой|открыть|открою|откроем|откройте).{0,30}нов(?:ый|ое|ую)|нов(?:ый|ое|ую) (?:проект|окно)|пуст(?:ое|ой|ую) (?:окно|проект)|new (?:project|window)/.test(
         q,
@@ -179,9 +207,9 @@ export class LocalIntentResolver implements IntentResolver {
         (a) => a.id === context.lastApplication,
       )!;
     }
-    if (!project && ((refersBack && !app) || asksSite))
+    if (!project && ((refersBack && !app) || (asksSite && !spokenUrl)))
       project = registry.projects.find((p) => p.id === context.activeProject)!;
-    if (asksSite && opening) {
+    if (asksSite && opening && !spokenUrl) {
       if (!project)
         return chooseProjects(registry, "Сайт какого проекта открыть?");
       const url = /локальн/.test(q)
@@ -332,10 +360,9 @@ export class LocalIntentResolver implements IntentResolver {
           registry.applications.find((a) => /cursor/i.test(a.name));
         return execute(
           {
-            action: "open_named_item",
+            action: "open_editor_project",
             parameters: {
               query,
-              kind: "folder",
               ...(editor ? { applicationId: editor.id } : {}),
             },
           },

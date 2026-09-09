@@ -92,7 +92,7 @@ export function App() {
       void api<CommandRecord>("/api/commands/" + current.id)
         .then(update)
         .catch(() => setFailed(true));
-    }, 1500);
+    }, 300);
     return () => clearInterval(poll);
   }, [current?.id, current?.status]);
 
@@ -169,7 +169,7 @@ export function App() {
         heardVoice = true;
         lastVoiceAt = now;
       }
-      if (heardVoice && now - lastVoiceAt > 950 && now - startedAt > 1200) {
+      if (heardVoice && now - lastVoiceAt > 550 && now - startedAt > 800) {
         stopRecording();
         return;
       }
@@ -217,7 +217,7 @@ export function App() {
       mediaRecorder.start(200);
       setRecording(true);
       detectSilence(mediaStream);
-      timeout.current = setTimeout(() => stopRecording(), 20_000);
+      timeout.current = setTimeout(() => stopRecording(), 8_000);
     } catch {
       setFailed(true);
       setRecording(false);

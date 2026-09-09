@@ -1,6 +1,13 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { stat, mkdir, writeFile, access } from "node:fs/promises";
+import {
+  stat,
+  mkdir,
+  writeFile,
+  access,
+  readdir,
+  readFile,
+} from "node:fs/promises";
 import { join, basename, extname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -14,6 +21,20 @@ import {
   type Trust,
 } from "../../../packages/shared/src/index.js";
 import { guardPath, documentExtensions } from "./safety.js";
+import {
+  buildNamedSpotlightQuery,
+  pickNamedMatch,
+  rankNamedMatches,
+  scoreNamedPath,
+} from "./spoken-name.js";
+import {
+  CursorProjectIndex,
+  allowedSshHosts,
+  guardRemoteUri,
+  type CursorProject,
+} from "./cursor-projects.js";
+import { DriveMcpClient, driveOriginFromMcp } from "./drive-mcp.js";
+export { rankNamedMatches, pickNamedMatch } from "./spoken-name.js";
 const exec = promisify(execFile);
 
 const normalizeName = (s: string) =>
@@ -68,37 +89,37 @@ export function knownFolderPath(query: string): string | undefined {
   return undefined;
 }
 
-export function rankNamedMatches(paths: string[], needle: string): string[] {
-  const n = normalizeName(needle);
-  const score = (path: string) => {
-    const name = normalizeName(basename(path));
-    const stem = normalizeName(basename(path, extname(path)));
-    let s = 0;
-    if (name === n || stem === n) s += 1000;
-    else if (name.startsWith(n) || stem.startsWith(n)) s += 300;
-    else if (name.includes(n) || stem.includes(n)) s += 80;
-    s -= path.split("/").filter(Boolean).length * 8;
-    if (
-      /\/(Desktop|Documents|Downloads|Developer|Movies|Music|Pictures)(\/|$)/i.test(
-        path,
-      )
-    )
-      s += 120;
-    if (/\/(Library|node_modules|\.git|\.venv|dist)\//.test(path)) s -= 600;
-    return s;
-  };
-  return [...new Set(paths)].sort(
-    (a, b) => score(b) - score(a) || a.length - b.length,
-  );
-}
 export type ExecutorOptions = {
   real: boolean;
   roots: string[];
   trust: Trust;
   dataDir: string;
+  driveUrl?: string;
+  driveToken?: string;
 };
 export class MacExecutor {
-  constructor(private o: ExecutorOptions) {}
+  private projects: CursorProjectIndex;
+  constructor(private o: ExecutorOptions) {
+    this.projects = new CursorProjectIndex({
+      roots: o.roots.length ? o.roots : [homedir()],
+      // `find` exits non-zero on unreadable subdirectories but still lists the rest.
+      ssh: o.real
+        ? (file, args) =>
+            exec(file, args, {
+              timeout: 15000,
+              maxBuffer: 4 * 1024 * 1024,
+              encoding: "utf8",
+            }).then(
+              ({ stdout }) => stdout,
+              (e: { stdout?: string }) =>
+                typeof e.stdout === "string" ? e.stdout : "",
+            )
+        : undefined,
+    });
+  }
+  warmProjects() {
+    return this.projects.warm();
+  }
   private async run(file: string, args: string[]) {
     const { stdout } = await exec(file, args, {
       timeout: 12000,
@@ -107,8 +128,9 @@ export class MacExecutor {
     });
     return stdout.trim();
   }
-  private async activate(applicationName: string) {
-    await this.run("/usr/bin/open", ["-a", applicationName]);
+  /** `open -a <name>` can resolve to another copy of the bundle, so prefer the registry path. */
+  private async activate(applicationName: string, appPath?: string) {
+    await this.run("/usr/bin/open", ["-a", appPath ?? applicationName]);
   }
   private async findEditorCli(appPath: string | undefined, appName: string) {
     const bases = [
@@ -151,7 +173,7 @@ export class MacExecutor {
       await this.run("/usr/bin/open", ["-a", appPath ?? name, options.folder]);
       return;
     }
-    await this.activate(name);
+    await this.activate(name, appPath);
   }
   async execute(
     command: Action,
@@ -183,6 +205,8 @@ export class MacExecutor {
         c.action === "close_application" ||
         c.action === "new_browser_tab"
       )
+        application(c.parameters.applicationId);
+      if (c.action === "open_url" && c.parameters.applicationId)
         application(c.parameters.applicationId);
       if (c.action === "open_project") {
         project(c.parameters.projectId);
@@ -307,9 +331,20 @@ export class MacExecutor {
         }
         case "open_named_item":
           return this.openNamed(c.parameters, registry);
-        case "open_url":
-          await this.run("/usr/bin/open", [c.parameters.url]);
+        case "open_editor_project":
+          return this.openEditorProject(c.parameters, registry);
+        case "open_url": {
+          const args = c.parameters.applicationId
+            ? [
+                "-a",
+                application(c.parameters.applicationId),
+                "--",
+                c.parameters.url,
+              ]
+            : [c.parameters.url];
+          await this.run("/usr/bin/open", args);
           return { success: true, message: "Открыт " + c.parameters.url };
+        }
         case "new_browser_tab": {
           const name = application(c.parameters.applicationId);
           if (c.parameters.applicationId !== "chrome")
@@ -323,6 +358,8 @@ export class MacExecutor {
         }
         case "search_files":
           return this.search(c.parameters);
+        case "search_drive":
+          return this.searchDrive(c.parameters);
         case "run_shortcut":
           if (!confirmed) throw new Error("Требуется подтверждение");
           await this.run("/usr/bin/shortcuts", [
@@ -407,6 +444,25 @@ export class MacExecutor {
     }
   }
   private async mock(c: Action, registry: Registry): Promise<ExecutionResult> {
+    if (c.action === "search_drive") {
+      const origin = driveOriginFromMcp(
+        this.o.driveUrl ?? "https://drive.esl.kz/mcp",
+      );
+      return {
+        success: true,
+        message: "Mock: найдены файлы на диске",
+        files: [
+          {
+            id: "1",
+            name: "Договор.pdf",
+            path: "/drive/files/1",
+            modifiedAt: new Date().toISOString(),
+            kind: "drive",
+            url: origin + "/app/preview/1",
+          },
+        ],
+      };
+    }
     if (c.action === "search_files") {
       const dir = resolve(this.o.dataDir, "mock-files");
       await mkdir(dir, { recursive: true });
@@ -447,6 +503,8 @@ export class MacExecutor {
       get_active_application: "Активное приложение: Cursor",
       open_file: "Документ открыт",
       open_named_item: "Файл или папка открыты",
+      open_editor_project: "Проект открыт в редакторе",
+      search_drive: "Найдены файлы на диске",
       open_application: "Приложение открыто",
       set_volume: "Громкость изменена",
       open_url: "Сайт открыт",
@@ -467,12 +525,101 @@ export class MacExecutor {
       },
     };
   }
+  private editorApp(registry: Registry, applicationId?: string) {
+    const app = applicationId
+      ? registry.applications.find((a) => a.id === applicationId)
+      : (registry.applications.find((a) => a.id === "cursor") ??
+        registry.applications.find((a) => /cursor|visual studio code/i.test(a.name)));
+    if (!app) throw new Error("Редактор не зарегистрирован");
+    return app;
+  }
+  private async launchProject(
+    project: CursorProject,
+    app: { name: string; path?: string },
+    newWindow: boolean,
+  ) {
+    if (project.local) {
+      const folder = await guardPath(project.path, this.o.roots, "project");
+      await this.openEditor(app.name, app.path, { folder, newWindow });
+      await this.activate(app.name, app.path);
+      return;
+    }
+    let config = "";
+    try {
+      config = await readFile(join(homedir(), ".ssh/config"), "utf8");
+    } catch {
+      config = "";
+    }
+    guardRemoteUri(
+      project.uri,
+      allowedSshHosts(config, process.env.ALLOWED_SSH_HOSTS ?? ""),
+    );
+    const cli = await this.findEditorCli(app.path, app.name);
+    if (!cli)
+      throw new Error(
+        "Не нашёл CLI " + app.name + ": удалённые проекты открываются через него.",
+      );
+    await this.run(cli, [
+      ...(newWindow ? ["-n"] : []),
+      "--folder-uri",
+      project.uri,
+    ]);
+    // The CLI only signals the app, so the window would otherwise stay behind.
+    await this.activate(app.name, app.path);
+  }
+  private async openEditorProject(
+    p: Extract<Action, { action: "open_editor_project" }>["parameters"],
+    registry: Registry,
+  ): Promise<ExecutionResult> {
+    const app = this.editorApp(registry, p.applicationId);
+    const matches = p.projectKey
+      ? [await this.projects.byKey(p.projectKey)].filter(
+          (project): project is CursorProject => !!project,
+        )
+      : await this.projects.find(p.query, p.host);
+    if (!matches.length) {
+      if (!p.query)
+        throw new Error("Проект из списка больше не доступен, повторите запрос");
+      // An unknown name may still be a plain folder on disk.
+      return this.openNamed(
+        { query: p.query, kind: "folder", applicationId: app.id },
+        registry,
+      );
+    }
+    if (matches.length > 1 && !p.projectKey)
+      return {
+        success: true,
+        message: "Нашлось несколько проектов. Назовите номер.",
+        files: matches.slice(0, 10).map((project) => ({
+          id: project.key,
+          name: project.name,
+          path: project.path,
+          modifiedAt: new Date().toISOString(),
+          kind: "project" as const,
+          ...(project.host ? { host: project.host } : {}),
+        })),
+      };
+    const project = matches[0];
+    // Without -n the editor focuses the window that already holds this folder
+    // and opens a new one otherwise, which is exactly the wanted behaviour.
+    await this.launchProject(project, app, p.newWindow === true);
+    return {
+      success: true,
+      message:
+        "Открываю " +
+        project.name +
+        (project.host ? " на " + project.host : "") +
+        " в " +
+        app.name,
+      data: { path: project.path, uri: project.uri },
+    };
+  }
   private async openNamed(
     p: Extract<Action, { action: "open_named_item" }>["parameters"],
     registry: Registry,
   ): Promise<ExecutionResult> {
     const needle = p.query.replace(/[\\"*?]/g, " ").trim();
-    if (needle.length < 2) throw new Error("Назовите папку или файл");
+    if (!needle) throw new Error("Назовите папку или файл");
     const reveal = async (path: string, kind: "file" | "folder") => {
       const guarded = await guardPath(path, this.o.roots, kind);
       if (p.applicationId) {
@@ -508,43 +655,55 @@ export class MacExecutor {
         : p.kind === "file"
           ? ' && kMDItemContentType != "public.folder"'
           : "";
+    const query = buildNamedSpotlightQuery(needle, p.kind);
     const matches: string[] = [];
-    for (const root of this.o.roots) {
-      try {
-        const dir = await guardPath(root, this.o.roots, "folder");
-        const found = await this.run("/usr/bin/mdfind", [
-          "-0",
-          "-onlyin",
-          dir,
-          "(kMDItemFSName == \"*" +
-            needle +
-            '*"cd || kMDItemDisplayName == "*' +
-            needle +
-            '*"cd)' +
-            typeFilter,
-        ]);
-        matches.push(...found.split("\0").filter(Boolean));
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw e;
-      }
-    }
-    const ranked = rankNamedMatches(matches, needle);
-    const ordered: string[] = [];
-    if (p.applicationId || p.kind === "folder") {
-      for (const candidate of ranked) {
+    if (query)
+      for (const root of this.o.roots) {
         try {
-          if ((await stat(candidate)).isDirectory()) ordered.push(candidate);
-        } catch {
-          continue;
+          const dir = await guardPath(root, this.o.roots, "folder");
+          const found = await this.run("/usr/bin/mdfind", [
+            "-0",
+            "-onlyin",
+            dir,
+            query + typeFilter,
+          ]);
+          matches.push(...found.split("\0").filter(Boolean));
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw e;
         }
       }
-      if (!p.applicationId)
-        for (const candidate of ranked)
-          if (!ordered.includes(candidate)) ordered.push(candidate);
-    } else ordered.push(...ranked);
-    for (const candidate of ordered.length ? ordered : ranked) {
+    const typed = await this.filterNamedKind(matches, p);
+    let pick = pickNamedMatch(typed, needle, p.kind);
+    const weak =
+      pick.type === "none" ||
+      (pick.type === "open" && scoreNamedPath(pick.path, needle, p.kind) < 200);
+    if (weak) {
+      const walked = await this.walkNamedFallback();
+      typed.push(...(await this.filterNamedKind(walked, p)));
+      pick = pickNamedMatch(typed, needle, p.kind);
+    }
+    if (pick.type === "choose") {
+      const files = await this.namedChoices(pick.paths);
+      if (files.length === 1)
+        return await reveal(
+          files[0].path,
+          files[0].kind === "folder" ? "folder" : "file",
+        );
+      if (files.length > 1)
+        return {
+          success: true,
+          message: "Нашлось несколько вариантов. Назовите номер.",
+          files,
+        };
+    }
+    const ordered =
+      pick.type === "open"
+        ? [pick.path, ...rankNamedMatches(typed, needle, p.kind)]
+        : rankNamedMatches(typed, needle, p.kind);
+    for (const candidate of ordered) {
       try {
+        if (scoreNamedPath(candidate, needle, p.kind) < 50) continue;
         const info = await stat(candidate);
         const kind = info.isDirectory() ? "folder" : "file";
         if (p.kind === "folder" && kind !== "folder") continue;
@@ -560,6 +719,102 @@ export class MacExecutor {
         needle +
         ". Проверьте название и что папка есть в разрешённых каталогах.",
     );
+  }
+  private async filterNamedKind(
+    paths: string[],
+    p: Extract<Action, { action: "open_named_item" }>["parameters"],
+  ) {
+    const out: string[] = [];
+    for (const path of [...new Set(paths)]) {
+      try {
+        const info = await stat(path);
+        const kind = info.isDirectory() ? "folder" : "file";
+        if (p.kind === "folder" && kind !== "folder") continue;
+        if (p.kind === "file" && kind !== "file") continue;
+        if (p.applicationId && kind !== "folder") continue;
+        out.push(path);
+      } catch {
+        continue;
+      }
+    }
+    return out;
+  }
+  private async namedChoices(paths: string[]): Promise<FileMatch[]> {
+    const files: FileMatch[] = [];
+    for (const path of paths) {
+      try {
+        const actual = await guardPath(
+          path,
+          this.o.roots,
+          (await stat(path)).isDirectory() ? "folder" : "file",
+        );
+        const info = await stat(actual);
+        files.push({
+          id: randomUUID(),
+          name: basename(actual),
+          path: actual,
+          modifiedAt: info.mtime.toISOString(),
+          kind: info.isDirectory() ? "folder" : "file",
+        });
+      } catch {
+        continue;
+      }
+    }
+    return files;
+  }
+  private async walkNamedFallback() {
+    const SKIP =
+      /^(Library|node_modules|\.git|\.venv|dist|build|Applications|Photos Library\.photoslibrary)$/i;
+    const found: string[] = [];
+    const walk = async (dir: string, depth: number, maxDepth: number) => {
+      if (depth > maxDepth || found.length >= 2000) return;
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (found.length >= 2000) return;
+        if (entry.name.startsWith(".")) continue;
+        const path = join(dir, entry.name);
+        found.push(path);
+        if (
+          entry.isDirectory() &&
+          !entry.isSymbolicLink() &&
+          depth < maxDepth &&
+          !SKIP.test(entry.name)
+        )
+          await walk(path, depth + 1, maxDepth);
+      }
+    };
+    const home = homedir();
+    const preferred = [
+      "Desktop",
+      "Documents",
+      "Downloads",
+      "Developer",
+      "Pictures",
+      "Movies",
+      "Music",
+    ].map((name) => join(home, name));
+    for (const dir of preferred) {
+      try {
+        await guardPath(dir, this.o.roots, "folder");
+        await walk(dir, 0, 4);
+      } catch {
+        continue;
+      }
+    }
+    for (const root of this.o.roots) {
+      try {
+        const dir = await guardPath(root, this.o.roots, "folder");
+        await walk(dir, 0, 3);
+      } catch {
+        continue;
+      }
+    }
+    return found;
   }
   private async search(
     p: Extract<Action, { action: "search_files" }>["parameters"],
@@ -641,6 +896,62 @@ export class MacExecutor {
         ? "Найдено файлов: " + unique.length
         : "Подходящие файлы не найдены в разрешённых папках. Проверьте индекс Spotlight.",
       files: unique,
+    };
+  }
+  private driveClient() {
+    return new DriveMcpClient({
+      url: this.o.driveUrl ?? "https://drive.esl.kz/mcp",
+      token: this.o.driveToken ?? "",
+      origin: driveOriginFromMcp(this.o.driveUrl ?? "https://drive.esl.kz/mcp"),
+    });
+  }
+  private async searchDrive(
+    p: Extract<Action, { action: "search_drive" }>["parameters"],
+  ): Promise<ExecutionResult> {
+    const client = this.driveClient();
+    const toMatch = (hit: {
+      id: number;
+      kind: "file" | "folder";
+      name: string;
+      path: string;
+      extension?: string;
+      updated_at?: string;
+    }): FileMatch => ({
+      id: String(hit.id),
+      name: hit.name,
+      path: "/drive/" + hit.kind + "s/" + hit.id,
+      modifiedAt: hit.updated_at ?? new Date().toISOString(),
+      kind: "drive",
+      url: client.openUrl(hit),
+    });
+    if (p.fileId && !p.query) {
+      const hit = {
+        id: p.fileId,
+        kind: "file" as const,
+        name: "файл " + p.fileId,
+        path: "/",
+      };
+      return {
+        success: true,
+        message: "Файл диска " + p.fileId,
+        files: [toMatch(hit)],
+      };
+    }
+    const hits = await client.search(p.query);
+    const selected = p.fileId
+      ? hits.filter((hit) => hit.id === p.fileId)
+      : hits;
+    if (!selected.length)
+      return {
+        success: true,
+        message: "На диске ничего не нашёл по запросу «" + p.query + "».",
+        files: [],
+      };
+    const files = selected.slice(0, 10).map(toMatch);
+    return {
+      success: true,
+      message: "На диске нашлось вариантов: " + files.length,
+      files,
     };
   }
 }

@@ -51,6 +51,18 @@
       "id": "safari",
       "name": "Safari",
       "aliases": ["сафари", "браузер"]
+    },
+    {
+      "id": "chrome",
+      "name": "Google Chrome",
+      "aliases": [
+        "хром",
+        "хроме",
+        "гугл хром",
+        "chrome",
+        "голого храма",
+        "голову срама"
+      ]
     }
   ]
 }

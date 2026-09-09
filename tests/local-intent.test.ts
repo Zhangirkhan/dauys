@@ -84,10 +84,9 @@ describe("real local intent without cloud keys", () => {
       registry,
       context,
     });
-    expect(d.type === "execute" && d.action).toBe("open_named_item");
+    expect(d.type === "execute" && d.action).toBe("open_editor_project");
     expect(d.type === "execute" && d.parameters).toEqual({
       query: "неизвестный",
-      kind: "folder",
       applicationId: "cursor",
     });
   });
@@ -97,7 +96,7 @@ describe("real local intent without cloud keys", () => {
       registry,
       context,
     });
-    expect(d.type === "execute" && d.action).toBe("open_named_item");
+    expect(d.type === "execute" && d.action).toBe("open_editor_project");
     expect(d.type === "execute" && d.parameters.query).toBe("коскадо");
     expect(d.type === "execute" && d.parameters.applicationId).toBe("cursor");
   });
@@ -153,6 +152,30 @@ describe("real local intent without cloud keys", () => {
     expect(d.type === "execute" && d.parameters).toEqual({
       query: "загрузки",
       kind: "folder",
+    });
+  });
+  it("keeps a spoken number as the folder query", async () => {
+    const d = await resolver.resolve({
+      text: "Открой папку один",
+      registry,
+      context,
+    });
+    expect(d.type === "execute" && d.action).toBe("open_named_item");
+    expect(d.type === "execute" && d.parameters).toEqual({
+      query: "один",
+      kind: "folder",
+    });
+  });
+  it("searches the corporate drive instead of a local folder", async () => {
+    const d = await resolver.resolve({
+      text: "Найди на диске договор каспи",
+      registry,
+      context,
+    });
+    expect(d.type === "execute" && d.action).toBe("search_drive");
+    expect(d.type === "execute" && d.parameters).toEqual({
+      query: "договор каспи",
+      open: true,
     });
   });
   it("opens an arbitrary file by name", async () => {
@@ -224,6 +247,14 @@ describe("spoken folder and file names", () => {
     expect(extractSpokenItem("Открой документы")).toEqual({
       query: "документы",
       kind: "any",
+    });
+    expect(extractSpokenItem("Открой папку один")).toEqual({
+      query: "один",
+      kind: "folder",
+    });
+    expect(extractSpokenItem("Открой папку 1")).toEqual({
+      query: "1",
+      kind: "folder",
     });
   });
   it("rewrites a bare Cursor request away from the active project", () => {

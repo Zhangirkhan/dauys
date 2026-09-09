@@ -24,6 +24,7 @@ import {
 import { Store, RegistryFile, type Device } from "./store.js";
 import { type IntentResolver, ordinal } from "./intent.js";
 import { preferSpokenNamedItem } from "./named-item.js";
+import { preferSpokenUrl } from "./spoken-url.js";
 import type { SpeechToTextProvider } from "./stt.js";
 class ApiError extends Error {
   constructor(
@@ -216,6 +217,7 @@ export async function createApp(o: AppOptions) {
         break;
       }
       case "open_named_item":
+      case "open_editor_project":
         if (
           command.parameters.applicationId &&
           !registry.applications.some(
@@ -241,7 +243,7 @@ export async function createApp(o: AppOptions) {
     }
     const ws = agents.get(c.agentId);
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      fail(c, "MacBook не подключён. Запустите pnpm dev:agent.");
+        fail(c, "MacBook не подключён. Запустите агент Рядом на Mac.");
       return;
     }
     c.status = "executing";
@@ -286,16 +288,20 @@ export async function createApp(o: AppOptions) {
       const registry = o.registry.get();
       const spokenText = answer ? c.text + " " + answer : c.text;
       const decision = decisionSchema.parse(
-        preferSpokenNamedItem(
+        preferSpokenUrl(
           spokenText,
           registry,
-          await o.resolver.resolve({
-            text: answer ?? c.text,
+          preferSpokenNamedItem(
+            spokenText,
             registry,
-            context: buildContext(c),
-            pending,
-            shortcuts: capabilities.get(c.agentId)?.shortcuts,
-          }),
+            await o.resolver.resolve({
+              text: answer ?? c.text,
+              registry,
+              context: buildContext(c),
+              pending,
+              shortcuts: capabilities.get(c.agentId)?.shortcuts,
+            }),
+          ),
         ),
       );
       if (closing) return;
@@ -366,6 +372,55 @@ export async function createApp(o: AppOptions) {
       ctx.searchResults = result.files ?? [];
       if (result.files?.length === 1) ctx.lastFile = result.files[0].path;
       o.store.saveContext(c.agentId, ctx);
+    }
+    if (
+      result.success &&
+      (c.command?.action === "open_named_item" ||
+        c.command?.action === "open_editor_project") &&
+      result.files &&
+      result.files.length > 1
+    ) {
+      c.files = result.files;
+      c.status = "clarification";
+      c.question = "Что открыть? Назовите номер.";
+      c.options = result.files.map((f) => ({
+        id: f.id,
+        label: f.name + " · " + (f.host ? f.host + ":" : "") + f.path,
+      }));
+      save(c);
+      return;
+    }
+    if (
+      result.success &&
+      c.command?.action === "search_drive" &&
+      result.files?.length
+    ) {
+      c.files = result.files;
+      if (result.files.length === 1 && result.files[0].url) {
+        c.command = {
+          action: "open_url",
+          parameters: {
+            url: result.files[0].url,
+            applicationId: o.registry
+              .get()
+              .applications.some((a) => a.id === "chrome")
+              ? "chrome"
+              : undefined,
+          },
+        };
+        dispatch(c);
+        return;
+      }
+      if (result.files.length > 1) {
+        c.status = "clarification";
+        c.question = "Какой файл с диска открыть? Назовите номер.";
+        c.options = result.files.map((f) => ({
+          id: f.id,
+          label: f.name + (f.path && f.path !== "/" ? " · " + f.path : ""),
+        }));
+        save(c);
+        return;
+      }
     }
     if (
       result.success &&
@@ -521,11 +576,31 @@ export async function createApp(o: AppOptions) {
         c.files.find((f) => f.id === answer || f.name === answer) ??
         (i === undefined ? undefined : c.files[i]);
       if (!f) {
-        c.question = "Выберите файл из списка или скажите его номер.";
+        c.question = "Выберите файл или папку из списка или скажите номер.";
         save(c);
         return;
       }
-      c.command = { action: "open_file", parameters: { path: f.path } };
+      c.command =
+        f.kind === "drive" && f.url
+          ? {
+              action: "open_url",
+              parameters: {
+                url: f.url,
+                applicationId: o.registry
+                  .get()
+                  .applications.some((a) => a.id === "chrome")
+                  ? "chrome"
+                  : undefined,
+              },
+            }
+          : f.kind === "project"
+          ? {
+              action: "open_editor_project",
+              parameters: { query: f.name, projectKey: f.id },
+            }
+          : f.kind === "folder"
+            ? { action: "open_folder", parameters: { path: f.path } }
+            : { action: "open_file", parameters: { path: f.path } };
       c.confirmed = false;
       dispatch(c);
       return;
@@ -567,12 +642,15 @@ export async function createApp(o: AppOptions) {
       throw e;
     }
     background(async () => {
+      const started = Date.now();
       try {
         const t = await o.stt.transcribe(join(dir, "input"));
+        const sttMs = Date.now() - started;
         if (closing) return;
         const current = o.store.command(c.id);
         if (!current || terminal(current)) return;
         active(c);
+        const intentStarted = Date.now();
         if (pending) {
           c.status = "clarification";
           await clarify(c, t.text);
@@ -580,6 +658,15 @@ export async function createApp(o: AppOptions) {
           c.text = t.text;
           await resolveIntent(c);
         }
+        app.log.info(
+          {
+            sttMs,
+            intentMs: Date.now() - intentStarted,
+            totalMs: Date.now() - started,
+            text: t.text.slice(0, 80),
+          },
+          "voice pipeline",
+        );
       } catch (e) {
         fail(c, (e as Error).message);
       } finally {

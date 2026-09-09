@@ -82,6 +82,19 @@ export const actionSchema = z.discriminatedUnion("action", [
     .strict(),
   z
     .object({
+      action: z.literal("search_drive"),
+      parameters: z
+        .object({
+          query: z.string().trim().max(500).default(""),
+          open: z.boolean().default(true),
+          fileId: z.number().int().positive().optional(),
+        })
+        .strict()
+        .refine((v) => !!v.query || !!v.fileId, "Нужен запрос или файл диска"),
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal("open_folder"),
       parameters: z.object({ path: safePathSchema }).strict(),
     })
@@ -100,8 +113,34 @@ export const actionSchema = z.discriminatedUnion("action", [
     .strict(),
   z
     .object({
+      action: z.literal("open_editor_project"),
+      parameters: z
+        .object({
+          query: z.string().trim().max(200).default(""),
+          projectKey: z
+            .string()
+            .regex(/^[a-f0-9]{12}$/)
+            .optional(),
+          host: z.string().max(120).optional(),
+          applicationId: idSchema.optional(),
+          newWindow: z.boolean().optional(),
+        })
+        .strict()
+        .refine(
+          (v) => !!v.query || !!v.projectKey,
+          "Нужно название проекта или его ключ",
+        ),
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal("open_url"),
-      parameters: z.object({ url: safeUrlSchema }).strict(),
+      parameters: z
+        .object({
+          url: safeUrlSchema,
+          applicationId: idSchema.optional(),
+        })
+        .strict(),
     })
     .strict(),
   z
@@ -260,6 +299,9 @@ export const fileSchema = z
     name: z.string(),
     path: safePathSchema,
     modifiedAt: z.string(),
+    kind: z.enum(["file", "folder", "project", "drive"]).optional(),
+    host: z.string().max(120).optional(),
+    url: safeUrlSchema.optional(),
   })
   .strict();
 export type FileMatch = z.infer<typeof fileSchema>;
@@ -320,3 +362,8 @@ export type CommandRecord = {
   confirmed?: boolean;
   contextVersion?: number;
 };
+export {
+  compileDriveQuery,
+  extractSpokenDrive,
+  mentionsDrive,
+} from "./drive-query.js";

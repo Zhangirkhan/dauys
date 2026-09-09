@@ -13,6 +13,7 @@
     "dev:server": "tsx apps/server/src/index.ts",
     "dev:agent": "tsx apps/mac-agent/src/index.ts",
     "build": "pnpm --filter @voice/pwa build && tsup apps/server/src/index.ts --format esm --platform node --target node24 --out-dir apps/server/dist --clean && tsup apps/mac-agent/src/index.ts --format esm --platform node --target node24 --out-dir apps/mac-agent/dist --clean && node scripts/fix-node-sqlite.mjs apps/server/dist/index.js apps/mac-agent/dist/index.js",
+    "build:agent": "node scripts/build-agent.mjs",
     "start": "node scripts/dev.mjs --production",
     "test": "vitest run",
     "test:browser": "playwright test",
@@ -49,6 +50,7 @@
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.39.0",
     "vitest": "^3.2.4",
-    "prettier": "^3.6.2"
+    "prettier": "^3.6.2",
+    "postject": "1.0.0-alpha.6"
   }
 }

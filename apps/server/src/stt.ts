@@ -33,7 +33,7 @@ async function toWav(audioPath: string, wav: string) {
         "-i",
         resolve(audioPath),
         "-t",
-        "20",
+        "8",
         "-ar",
         "16000",
         "-ac",
@@ -41,7 +41,7 @@ async function toWav(audioPath: string, wav: string) {
         "-y",
         wav,
       ],
-      { timeout: 12000, maxBuffer: 1024 * 1024 },
+      { timeout: 4000, maxBuffer: 1024 * 1024 },
     );
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT")
@@ -68,12 +68,19 @@ export class HttpWhisperProvider implements SpeechToTextProvider {
       const endpoint = new URL("/asr", this.options.url);
       endpoint.searchParams.set("task", "transcribe");
       endpoint.searchParams.set("output", "json");
+      endpoint.searchParams.set("vad_filter", "true");
+      endpoint.searchParams.set("word_timestamps", "false");
+      endpoint.searchParams.set("encode", "true");
       if (this.options.language)
         endpoint.searchParams.set("language", this.options.language);
+      endpoint.searchParams.set(
+        "initial_prompt",
+        "открой запусти сайт хром телеграм курсор egov.kz youtube.com",
+      );
       const response = await fetch(endpoint, {
         method: "POST",
         body: form,
-        signal: AbortSignal.timeout(40000),
+        signal: AbortSignal.timeout(8000),
       });
       if (!response.ok)
         throw new Error("Whisper HTTP " + response.status);

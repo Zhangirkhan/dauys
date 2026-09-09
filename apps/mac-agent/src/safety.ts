@@ -1,5 +1,5 @@
 import { realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, sep, extname } from "node:path";
+import { isAbsolute, relative, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
@@ -33,6 +33,12 @@ export const documentExtensions = new Set([
   ".mp4",
   ".mov",
 ]);
+/**
+ * `open` hands these to a shell, AppleScript or an installer, so a spoken name
+ * must never be able to reach them.
+ */
+const executable =
+  /\.(app|workflow|scptd|scpt|applescript|osascript|command|terminal|tool|action|pkg|mpkg|dmg|prefpane|plugin|kext|saver|jar|sh|bash|zsh|csh|ksh|fish|shortcut|webloc|url)$/i;
 export function isWithin(path: string, root: string) {
   const rel = relative(root, path);
   return (
@@ -63,11 +69,7 @@ export async function guardPath(
     throw new Error(
       "Путь вне ALLOWED_DIRECTORIES. Добавьте нужный каталог локально в .env агента.",
     );
-  if (
-    actual
-      .split(sep)
-      .some((p) => p.startsWith(".") || /\.(app|workflow|scptd)$/i.test(p))
-  )
+  if (actual.split(sep).some((p) => p.startsWith(".") || executable.test(p)))
     throw new Error(
       "Скрытые файлы, пакеты приложений и автоматизации запрещены.",
     );
