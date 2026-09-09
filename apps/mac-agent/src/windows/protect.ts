@@ -160,6 +160,171 @@ $result = [Microsoft.VisualBasic.Interaction]::InputBox($Prompt, $Title, $defaul
 if ([string]::IsNullOrEmpty($result)) { exit 1 }
 Write-Output $result
 `,
+    "folder-picker.ps1": `param([string]$Description = 'Выберите папку')
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = $Description
+$dialog.ShowNewFolderButton = $true
+if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { exit 1 }
+Write-Output $dialog.SelectedPath
+`,
+    "discover-apps.ps1": `$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+$shell = New-Object -ComObject WScript.Shell
+$results = New-Object System.Collections.Generic.List[object]
+function Add-Lnk([string]$lnkPath) {
+  try {
+    $sc = $shell.CreateShortcut($lnkPath)
+    $target = [string]$sc.TargetPath
+    $args = [string]$sc.Arguments
+    if ([string]::IsNullOrWhiteSpace($target)) { return }
+    if ($target -match '^(https?:|file:|ms-msdt:|search-ms:|javascript:)' ) { return }
+    if ($target.StartsWith('\\\\') -or $target.StartsWith('//')) { return }
+    if ($target -notmatch '\\.exe$') { return }
+    if ($args -match '(?i)(-Command|-EncodedCommand|powershell|pwsh|cmd\\.exe|/c\\b)') { return }
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($lnkPath)
+    if ([string]::IsNullOrWhiteSpace($name) -or $name.Length -gt 80) { return }
+    $results.Add([pscustomobject]@{ name = $name; path = $target; args = $args })
+  } catch {}
+}
+$dirs = @(
+  [Environment]::GetFolderPath('StartMenu'),
+  [Environment]::GetFolderPath('CommonStartMenu'),
+  (Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs'),
+  (Join-Path $env:ProgramData 'Microsoft\\Windows\\Start Menu\\Programs')
+) | Select-Object -Unique
+foreach ($dir in $dirs) {
+  if (-not (Test-Path -LiteralPath $dir)) { continue }
+  Get-ChildItem -LiteralPath $dir -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue |
+    ForEach-Object { Add-Lnk $_.FullName }
+}
+# App Paths (HKCU + HKLM)
+foreach ($root in @(
+  'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths',
+  'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths'
+)) {
+  if (-not (Test-Path -LiteralPath $root)) { continue }
+  Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | ForEach-Object {
+    try {
+      $p = (Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction Stop).'(default)'
+      if ($p -and ($p -match '\\.exe$') -and (Test-Path -LiteralPath $p)) {
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($_.PSChildName)
+        $results.Add([pscustomobject]@{ name = $name; path = $p; args = '' })
+      }
+    } catch {}
+  }
+}
+$results | ConvertTo-Json -Compress -Depth 3
+`,
+    "tray-host.ps1": `param(
+  [Parameter(Mandatory = $true)][string]$BaseUrl,
+  [Parameter(Mandatory = $true)][string]$Token,
+  [string]$IconPath = ''
+)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+$script:status = 'connecting'
+$notify = New-Object System.Windows.Forms.NotifyIcon
+$notify.Text = 'Dauys'
+$notify.Visible = $true
+function Set-StatusIcon([string]$s) {
+  $script:status = $s
+  $color = switch ($s) {
+    'connected' { [System.Drawing.Color]::LimeGreen }
+    'connecting' { [System.Drawing.Color]::Gold }
+    'error' { [System.Drawing.Color]::Red }
+    default { [System.Drawing.Color]::Gray }
+  }
+  $bmp = New-Object System.Drawing.Bitmap 16, 16
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $g.Clear([System.Drawing.Color]::Transparent)
+  $brush = New-Object System.Drawing.SolidBrush $color
+  $g.FillEllipse($brush, 1, 1, 14, 14)
+  $g.Dispose(); $brush.Dispose()
+  if ($notify.Icon) { $notify.Icon.Dispose() }
+  $notify.Icon = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+  $notify.Text = 'Dauys: ' + $s
+}
+Set-StatusIcon 'connecting'
+
+function Invoke-Agent([string]$Method, [string]$Path, [string]$Body = $null) {
+  $url = $BaseUrl.TrimEnd('/') + $Path
+  $req = [System.Net.HttpWebRequest]::Create($url)
+  $req.Method = $Method
+  $req.Headers.Add('X-Dauys-Local', $Token)
+  $req.Timeout = 8000
+  if ($Body -ne $null) {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
+    $req.ContentType = 'application/json; charset=utf-8'
+    $req.ContentLength = $bytes.Length
+    $stream = $req.GetRequestStream()
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Close()
+  }
+  $resp = $req.GetResponse()
+  $reader = New-Object System.IO.StreamReader($resp.GetResponseStream())
+  $text = $reader.ReadToEnd()
+  $reader.Close(); $resp.Close()
+  return $text
+}
+
+$menu = New-Object System.Windows.Forms.ContextMenuStrip
+$miStatus = $menu.Items.Add('Состояние')
+$miSettings = $menu.Items.Add('Открыть настройки')
+$miPair = $menu.Items.Add('Новый код привязки')
+$miReconnect = $menu.Items.Add('Переподключиться')
+$miAutostart = $menu.Items.Add('Автозапуск')
+$miLog = $menu.Items.Add('Открыть журнал')
+$menu.Items.Add('-') | Out-Null
+$miExit = $menu.Items.Add('Выйти')
+$notify.ContextMenuStrip = $menu
+
+$miStatus.add_Click({
+  try {
+    $j = Invoke-Agent 'GET' '/api/status' | ConvertFrom-Json
+    [System.Windows.Forms.MessageBox]::Show(
+      ("Статус: {0}\`nСервер: {1}\`nПривязка: {2}\`nВерсия: {3}" -f $j.connection, $j.server, $j.paired, $j.version),
+      'Dauys'
+    ) | Out-Null
+  } catch {
+    [System.Windows.Forms.MessageBox]::Show('Не удалось получить статус', 'Dauys') | Out-Null
+  }
+})
+$miSettings.add_Click({ try { Invoke-Agent 'POST' '/api/open-settings' | Out-Null } catch {} })
+$miPair.add_Click({ try { Invoke-Agent 'POST' '/api/pair-again' | Out-Null } catch {} })
+$miReconnect.add_Click({ try { Invoke-Agent 'POST' '/api/reconnect' | Out-Null } catch {} })
+$miAutostart.add_Click({
+  try {
+    $j = Invoke-Agent 'POST' '/api/toggle-autostart' | ConvertFrom-Json
+    [System.Windows.Forms.MessageBox]::Show(
+      $(if ($j.autostart) { 'Автозапуск включён' } else { 'Автозапуск выключен' }),
+      'Dauys'
+    ) | Out-Null
+  } catch {}
+})
+$miLog.add_Click({ try { Invoke-Agent 'POST' '/api/open-log' | Out-Null } catch {} })
+$miExit.add_Click({
+  try { Invoke-Agent 'POST' '/api/quit' | Out-Null } catch {}
+  $notify.Visible = $false
+  [System.Windows.Forms.Application]::Exit()
+})
+
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 3000
+$timer.add_Tick({
+  try {
+    $j = Invoke-Agent 'GET' '/api/status' | ConvertFrom-Json
+    Set-StatusIcon ([string]$j.connection)
+  } catch {
+    Set-StatusIcon 'error'
+  }
+})
+$timer.Start()
+[System.Windows.Forms.Application]::Run()
+`,
   };
   for (const [name, body] of Object.entries(files)) {
     const target = join(dir, name);

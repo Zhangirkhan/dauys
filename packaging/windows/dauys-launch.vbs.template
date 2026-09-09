@@ -1,0 +1,3 @@
+Set sh = CreateObject("WScript.Shell")
+' Placeholder — real path written by Inno Setup at install time.
+sh.Run """%LOCALAPPDATA%\DauysAgent\bin\dauys-agent.exe""", 0, False

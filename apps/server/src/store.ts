@@ -210,4 +210,32 @@ export class RegistryFile {
     renameSync(this.path + ".tmp", this.path);
     return v;
   }
+  /** Merge agent apps_catalog: update name+aliases by id; never accept path from the frame. */
+  mergeAppsCatalog(
+    applications: Array<{ id: string; name: string; aliases: string[] }>,
+  ) {
+    const configured = registrySchema.parse(
+      JSON.parse(readFileSync(this.path, "utf8")),
+    );
+    const byId = new Map(configured.applications.map((a) => [a.id, a]));
+    for (const app of applications) {
+      const prev = byId.get(app.id);
+      if (prev) {
+        byId.set(app.id, {
+          id: prev.id,
+          name: app.name,
+          aliases: app.aliases,
+          ...(prev.path ? { path: prev.path } : {}),
+        });
+      } else {
+        byId.set(app.id, {
+          id: app.id,
+          name: app.name,
+          aliases: app.aliases,
+        });
+      }
+    }
+    configured.applications = [...byId.values()].slice(0, 100);
+    return this.set(configured);
+  }
 }

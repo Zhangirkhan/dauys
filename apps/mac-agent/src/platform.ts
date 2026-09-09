@@ -2,6 +2,7 @@ import type {
   Action,
   AllowedAction,
   ExecutionResult,
+  LocalApp,
   Registry,
   Trust,
 } from "../../../packages/shared/src/index.js";
@@ -21,9 +22,12 @@ export type AgentExecutor = {
   ) => Promise<ExecutionResult>;
   warmProjects?: () => Promise<void> | void;
   supportedActions: () => AllowedAction[];
+  setLocalApps?: (apps: LocalApp[]) => void;
 };
 
-export function createExecutor(o: ExecutorOptions): AgentExecutor {
+export function createExecutor(
+  o: ExecutorOptions & { localApps?: LocalApp[] },
+): AgentExecutor {
   if (process.platform === "win32") return new WinExecutor(o);
   return new MacExecutor(o);
 }

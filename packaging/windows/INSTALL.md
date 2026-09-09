@@ -1,51 +1,61 @@
-# Установка Windows-агента «Рядом» (Windows 11 x64)
+# Установка Windows-агента Dauys (Windows 11 x64)
 
-Агент работает в пользовательской сессии (ярлык в Startup), не как служба Windows.
+## Для обычного пользователя (рекомендуется)
 
-**Полная инструкция для архива переноса** (сборка → тестовый сервер → https://dauys.esl.kz):  
-`packaging/windows/BUILD-ON-WINDOWS.md`
+1. Скачайте **`DauysSetup-x64.exe`** (один установочный файл).
+2. Запустите двойным кликом (права администратора не нужны).
+3. Пройдите мастер: сервер → код привязки на телефоне → папки → приложения.
+4. Агент работает в системном трее (без окна консоли).
 
-`localhost` на Windows — это сам Windows-компьютер, не удалённый сервер.
+Каталог: `%LOCALAPPDATA%\DauysAgent`  
+Удаление: «Параметры → Приложения» (можно сохранить или стереть настройки).
 
-## Требования
-
-- Windows 11 x64
-- Node.js **24+** x64 и pnpm 11 (для SEA-сборки)
-- Сервер/PWA, доступные с этого ПК (тестовый стенд или production — разными этапами)
-
-## Вариант A — SEA (`dauys-agent.exe`)
-
-Сборку выполняйте **только на Windows**.
+Сборка установщика (на Windows-машине разработчика):
 
 ```powershell
 pnpm install
+pnpm build:agent:windows-installer
+# → dist\windows-installer\DauysSetup-x64.exe
+```
+
+Нужны Node 24+, pnpm 11 и [Inno Setup 6](https://jrsoftware.org/isdl.php).  
+Подпись: `packaging/windows/SIGNING.md`.
+
+---
+
+## Для разработчиков
+
+Агент — пользовательская сессия (Startup / VBS без консоли), не служба Windows.
+
+**Полная инструкция для архива переноса:** `BUILD-ON-WINDOWS.md`
+
+### Вариант A — графический установщик
+
+`pnpm build:agent:windows-installer` → `DauysSetup-x64.exe`
+
+### Вариант B — SEA + install.ps1
+
+```powershell
 pnpm build:agent:windows
 cd dist\windows
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Бинарник: `%LOCALAPPDATA%\DauysAgent\bin\dauys-agent.exe`.  
-Данные: `%LOCALAPPDATA%\DauysAgent\`.  
-Удаление: `uninstall.ps1` или `uninstall.ps1 -Purge`.
-
-## Вариант B — из исходников (`pnpm dev:agent`)
+### Вариант C — из исходников
 
 ```powershell
 pnpm install
 copy .env.windows-work.example .env
-# тестовый SERVER_PUBLIC_URL и AGENT_BOOTSTRAP_SECRET
-# ALLOWED_DIRECTORIES=C:/Users/YOU/Documents,...
-copy config\registry.windows.example.json data-windows-work\registry.json
 pnpm dev:agent
 ```
 
-## Реестр
+## Доверие к приложениям
 
-На Windows у приложений — полный путь к `.exe` (`config/registry.windows.example.json`).  
-`run_shortcut` — только id из `agent-trust.json` + `processes`.
+Пути к `.exe` хранятся **только локально** (`agent-apps.json`).  
+Сервер и телефон получают лишь `applicationId`, имя и aliases — не путь.
 
-## Этапы (кратко)
+## Этапы
 
-1. **Сборка** — `pnpm build:agent:windows` (без production-секретов).
-2. **Тест** — привязка к тестовому серверу, доступному с этого ПК.
-3. **Production** — новая привязка к https://dauys.esl.kz (`--reset` / `-Purge` после теста).
+1. Сборка установщика на Windows 11 x64  
+2. Проверка на VM без Node.js  
+3. Привязка к https://dauys.esl.kz  

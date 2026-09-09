@@ -20,8 +20,18 @@ const packaging = join(root, "packaging", "windows");
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 
-for (const name of ["install.ps1", "uninstall.ps1", "INSTALL.md", "BUILD-ON-WINDOWS.md", "DauysAcl.ps1"]) {
-  copyFileSync(join(packaging, name), join(outDir, name));
+for (const name of [
+  "install.ps1",
+  "uninstall.ps1",
+  "INSTALL.md",
+  "BUILD-ON-WINDOWS.md",
+  "DauysAcl.ps1",
+  "SIGNING.md",
+  "dauys-setup.iss",
+  "dauys-launch.vbs.template",
+]) {
+  const src = join(packaging, name);
+  if (existsSync(src)) copyFileSync(src, join(outDir, name));
 }
 
 copyFileSync(
@@ -46,16 +56,15 @@ writeFileSync(
     "",
     "1. На Windows 11 x64 в корне репозитория:",
     "   pnpm install",
-    "   pnpm build:agent:windows",
-    "2. Скопируйте dist\\windows\\dauys-agent.exe в эту папку (рядом с install.ps1)",
-    "   либо запускайте install.ps1 из dist\\windows после сборки.",
-    "3. powershell -ExecutionPolicy Bypass -File .\\install.ps1",
-    "4. Введите AGENT_BOOTSTRAP_SECRET тестового сервера.",
-    "5. Код привязки введите в PWA (SERVER_PUBLIC_URL / адрес сервера).",
+    "   pnpm build:agent:windows-installer",
+    "   → dist\\windows-installer\\DauysSetup-x64.exe",
+    "2. Либо только SEA: pnpm build:agent:windows → dist\\windows\\install.ps1",
+    "3. Для пользователей: двойной клик по DauysSetup-x64.exe (без Node/pnpm).",
+    "4. В мастере: адрес сервера + bootstrap-секрет → код на телефоне.",
     "",
-    "Подробности: INSTALL.md",
+    "Подробности: INSTALL.md / BUILD-ON-WINDOWS.md / SIGNING.md",
     "Данные агента: %LOCALAPPDATA%\\DauysAgent",
-    "Автозапуск: Startup текущего пользователя (не служба).",
+    "Автозапуск: Startup + VBS без консоли; статус в трее.",
     "",
     "Не подключайте агент к production и не используйте секреты из бэкапа.",
     "",

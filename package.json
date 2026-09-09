@@ -16,6 +16,7 @@
     "build:agent": "node scripts/build-agent.mjs",
     "build:agent:windows": "node scripts/build-agent.mjs --windows",
     "build:agent:macos": "node scripts/build-agent.mjs --macos",
+    "build:agent:windows-installer": "node scripts/build-windows-installer.mjs",
     "pack:windows-kit": "node scripts/prepare-windows-kit.mjs",
     "pack:windows-transfer": "node scripts/pack-windows-transfer.mjs",
     "start": "node scripts/dev.mjs --production",

@@ -40,16 +40,36 @@ import {
   runFixedPs1,
 } from "./protect.js";
 import { knownFolderPathWindows } from "./folders.js";
+import {
+  findLocalApp,
+  loadLocalApps,
+} from "./apps-store.js";
+import {
+  TRUSTED_SYSTEM_TARGETS,
+  validateWindowsExecutable,
+  type TrustedSystemId,
+} from "./validate-exe.js";
+import type { LocalApp } from "../../../../packages/shared/src/index.js";
 
 const exec = promisify(execFile);
+
+export type WinExecutorOptions = ExecutorOptions & {
+  /** Local trust map applicationId → exe/system. Paths never come from phone/server. */
+  localApps?: LocalApp[];
+};
 
 export class WinExecutor {
   private projects: CursorProjectIndex;
   private helpersDir = "";
-  constructor(private o: ExecutorOptions) {
+  private localApps: LocalApp[];
+  constructor(private o: WinExecutorOptions) {
     this.projects = new CursorProjectIndex({
       roots: o.roots.length ? o.roots : [homedir()],
     });
+    this.localApps = o.localApps ?? [];
+  }
+  setLocalApps(apps: LocalApp[]) {
+    this.localApps = apps;
   }
   supportedActions(): AllowedAction[] {
     const list = [...WINDOWS_SUPPORTED_ACTIONS] as AllowedAction[];
@@ -84,21 +104,54 @@ export class WinExecutor {
   private async resolveApp(
     applicationId: string,
     registry: Registry,
-  ): Promise<{ name: string; path: string }> {
-    const app = registry.applications.find((a) => a.id === applicationId);
-    if (!app) throw new Error("Приложение не зарегистрировано");
-    if (!app.path)
-      throw new Error(
-        "Для Windows укажите полный путь к .exe в реестре приложений (поле path).",
-      );
-    if (!/\.exe$/i.test(app.path))
-      throw new Error("Путь приложения Windows должен указывать на .exe");
-    try {
-      await access(app.path);
-    } catch {
-      throw new Error("Исполняемый файл не найден: " + app.path);
+  ): Promise<{ name: string; path: string; system?: TrustedSystemId }> {
+    // Prefer local trust catalog (paths never accepted from server/phone registry).
+    let local = findLocalApp(this.localApps, applicationId);
+    if (!local && !this.localApps.length) {
+      try {
+        const file = await loadLocalApps(this.o.dataDir);
+        this.localApps = file.apps;
+        local = findLocalApp(this.localApps, applicationId);
+      } catch {
+        /* fall through */
+      }
     }
-    return { name: app.name, path: app.path };
+    if (local) {
+      if (!local.enabled)
+        throw new Error("Приложение отключено в локальных настройках");
+      if (local.kind === "system") {
+        const t = TRUSTED_SYSTEM_TARGETS[local.id];
+        return { name: local.name, path: t.launch, system: local.id };
+      }
+      const path = await validateWindowsExecutable(local.executable);
+      return { name: local.name, path };
+    }
+
+    // Dev / mock fallback: registry path only when no local catalog entry and not standalone-strict
+    const app = registry.applications.find((a) => a.id === applicationId);
+    if (!app) throw new Error("Приложение не зарегистрировано локально");
+    if (applicationId === "explorer") {
+      return {
+        name: app.name,
+        path: TRUSTED_SYSTEM_TARGETS.explorer.launch,
+        system: "explorer",
+      };
+    }
+    if (applicationId === "settings") {
+      return {
+        name: app.name,
+        path: TRUSTED_SYSTEM_TARGETS.settings.launch,
+        system: "settings",
+      };
+    }
+    if (!this.o.real) {
+      return { name: app.name, path: app.path ?? "C:\\mock\\app.exe" };
+    }
+    throw new Error(
+      "Нет локального пути для «" +
+        app.name +
+        "». Откройте настройки агента и выполните поиск приложений.",
+    );
   }
   private processNameFromExe(exePath: string) {
     return basename(exePath).replace(/\.exe$/i, "");
@@ -263,14 +316,18 @@ export class WinExecutor {
 
       switch (c.action) {
         case "open_application": {
-          if (c.parameters.applicationId === "explorer") {
-            await this.openTarget("explorer.exe");
-            return { success: true, message: "Открыт Проводник" };
-          }
           const app = await this.resolveApp(
             c.parameters.applicationId,
             registry,
           );
+          if (app.system === "explorer" || app.path === "explorer.exe") {
+            await this.openTarget("explorer.exe");
+            return { success: true, message: "Открыт Проводник" };
+          }
+          if (app.system === "settings") {
+            await this.openTarget(TRUSTED_SYSTEM_TARGETS.settings.launch);
+            return { success: true, message: "Открыты Параметры Windows" };
+          }
           await this.openEditor(app.path, {
             newWindow: c.parameters.newWindow === true,
           });
@@ -287,6 +344,8 @@ export class WinExecutor {
             c.parameters.applicationId,
             registry,
           );
+          if (app.system)
+            throw new Error("Системную цель нельзя закрыть этой командой");
           const dir = await this.helpers();
           const out = await runFixedPs1(helperPath(dir, "close-app.ps1"), [
             "-ProcessName",

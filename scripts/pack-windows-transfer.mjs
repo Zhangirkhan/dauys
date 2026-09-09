@@ -135,13 +135,16 @@ for (const item of INCLUDE) {
 writeFileSync(
   join(stage, "README.TRANSFER.txt"),
   [
-    "Рядом — архив исходников Windows-агента",
+    "Dauys — архив исходников для Windows 11 x64 (feature/windows-easy-install)",
     "",
     "1. Установите Node.js 24+ x64 и pnpm 11.",
-    "2. pnpm install",
-    "3. pnpm build:agent:windows",
-    "4. Читайте packaging\\windows\\BUILD-ON-WINDOWS.md",
-    "   (сборка → тест → https://dauys.esl.kz с новой привязкой).",
+    "2. Установите Inno Setup 6: https://jrsoftware.org/isdl.php",
+    "3. Распакуйте архив, например в C:\\src\\dauys-agent",
+    "4. pnpm install",
+    "5. pnpm build:agent:windows-installer",
+    "6. Установщик: dist\\windows-installer\\DauysSetup-x64.exe",
+    "7. Чеклист VM: packaging\\windows\\VM-CHECKLIST.md",
+    "8. Подробности: packaging\\windows\\BUILD-ON-WINDOWS.md",
     "",
     "localhost на Windows = этот ПК, не удалённый сервер.",
     "Секреты и production-конфиги в архив не входят.",
@@ -156,17 +159,27 @@ const required = [
   "apps/mac-agent/package.json",
   "apps/mac-agent/src/index.ts",
   "apps/mac-agent/src/windows/executor.ts",
+  "apps/mac-agent/src/windows/control-server.ts",
+  "apps/mac-agent/src/windows/discover-apps.ts",
+  "apps/mac-agent/src/windows/validate-exe.ts",
   "packages/shared/package.json",
   "packages/shared/src/index.ts",
   "apps/server/package.json",
+  "apps/server/src/app.ts",
   "apps/pwa/package.json",
   "scripts/build-agent.mjs",
+  "scripts/build-windows-installer.mjs",
   "scripts/tsup.agent.ts",
   "scripts/fix-node-sqlite.mjs",
   "packaging/windows/install.ps1",
   "packaging/windows/uninstall.ps1",
+  "packaging/windows/DauysAcl.ps1",
+  "packaging/windows/dauys-setup.iss",
+  "packaging/windows/dauys-launch.vbs.template",
   "packaging/windows/BUILD-ON-WINDOWS.md",
   "packaging/windows/INSTALL.md",
+  "packaging/windows/VM-CHECKLIST.md",
+  "packaging/windows/SIGNING.md",
   ".env.windows-work.example",
   "config/registry.windows.example.json",
   "tsconfig.json",
@@ -186,7 +199,8 @@ const forbiddenHit = listFiles(stage).filter(
     f.endsWith(".db") ||
     f.includes("node_modules") ||
     f.startsWith(".git/") ||
-    f.includes("agent-token"),
+    f.includes("agent-token") ||
+    f.includes("executions.db"),
 );
 if (forbiddenHit.length) {
   console.error("В архив попало запрещённое:\n" + forbiddenHit.join("\n"));
@@ -214,6 +228,10 @@ runArchive("tar", ["-czf", archiveTgz, stageName]);
 
 const zipOk = existsSync(archiveZip);
 const pkg = JSON.parse(readFileSync(join(stage, "package.json"), "utf8"));
+if (!pkg.scripts?.["build:agent:windows-installer"]) {
+  console.error("В package.json нет build:agent:windows-installer");
+  process.exit(1);
+}
 if (!pkg.scripts?.["build:agent:windows"]) {
   console.error("В package.json нет build:agent:windows");
   process.exit(1);
@@ -223,4 +241,4 @@ console.log("Файлов в stage: " + files.length);
 console.log("MANIFEST: " + join(outDir, "MANIFEST.txt"));
 if (zipOk) console.log("ZIP: " + archiveZip);
 console.log("TGZ: " + archiveTgz);
-console.log("Инструкция: " + join(stageName, "packaging/windows/BUILD-ON-WINDOWS.md"));
+console.log("Инструкция: " + join(stageName, "packaging/windows/VM-CHECKLIST.md"));

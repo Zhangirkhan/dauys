@@ -11,6 +11,7 @@
 - Windows 11 x64
 - [Node.js 24+ x64](https://nodejs.org/) (нужен для SEA: бинарник агента = Node + blob)
 - pnpm 11: `corepack enable` затем `corepack prepare pnpm@11.9.0 --activate`
+- [Inno Setup 6](https://jrsoftware.org/isdl.php) — только для `pnpm build:agent:windows-installer`
 - Распакуйте архив в каталог без кириллицы в пути по возможности, например `C:\src\dauys-agent`
 
 ```powershell
@@ -22,7 +23,7 @@ pnpm install
 
 ---
 
-## 1. Сборка агента (без привязки к серверу)
+## 1. Сборка агента и установщика (без привязки к серверу)
 
 ```powershell
 pnpm build:agent:windows
@@ -30,23 +31,29 @@ pnpm build:agent:windows
 
 Ожидаемый результат: `dist\windows\dauys-agent.exe`, рядом `install.ps1`, `uninstall.ps1`, `INSTALL.md`.
 
-Установка в профиль пользователя (автозапуск через Startup, не служба):
+**Установщик для пользователей** (один `.exe`, без Node на целевом ПК):
+
+```powershell
+pnpm build:agent:windows-installer
+# → dist\windows-installer\DauysSetup-x64.exe
+```
+
+Альтернатива для разработчиков:
 
 ```powershell
 cd dist\windows
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-После установки бинарник: `%LOCALAPPDATA%\DauysAgent\bin\dauys-agent.exe`.  
-Данные агента: `%LOCALAPPDATA%\DauysAgent\`.
+После установки: `%LOCALAPPDATA%\DauysAgent\bin\dauys-agent.exe`.  
+Данные: `%LOCALAPPDATA%\DauysAgent\` (токен, `agent-apps.json`).  
+Автозапуск: VBS без консоли + значок в трее.
 
-Пока **не** вводите bootstrap-секрет production. Можно закрыть агент до настройки сервера:
+Пока **не** вводите bootstrap-секрет production:
 
 ```powershell
 Get-Process dauys-agent -ErrorAction SilentlyContinue | Stop-Process
 ```
-
-Проверка сборки без сети: файл `dauys-agent.exe` существует и запускается (окно/консоль; без секрета завершится с понятной ошибкой — это нормально).
 
 ---
 

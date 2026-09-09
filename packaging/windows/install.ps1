@@ -34,21 +34,25 @@ try {
     throw "После копирования файл недоступен: $dest"
   }
 
+  $vbs = Join-Path $destDir 'dauys-launch.vbs'
+  $vbsBody = "Set sh = CreateObject(`"WScript.Shell`")`r`nsh.Run `"`"`"$dest`"`"`", 0, False`r`n"
+  Set-Content -LiteralPath $vbs -Value $vbsBody -Encoding ASCII
+
   $startup = [Environment]::GetFolderPath('Startup')
   $shortcutPath = Join-Path $startup 'DauysAgent.lnk'
   $wsh = New-Object -ComObject WScript.Shell
   $sc = $wsh.CreateShortcut($shortcutPath)
-  $sc.TargetPath = $dest
+  $sc.TargetPath = $vbs
   $sc.WorkingDirectory = $destDir
   $sc.Arguments = ''
-  $sc.WindowStyle = 1
-  $sc.Description = 'Рядом — голосовой агент'
+  $sc.WindowStyle = 7
+  $sc.Description = 'Dauys — голосовой агент'
   $sc.Save()
 
   Write-Host "Установлено: $dest"
-  Write-Host "Автозапуск: $shortcutPath"
+  Write-Host "Автозапуск: $shortcutPath (через VBS, без консоли)"
   Write-Host "Запуск сейчас..."
-  Start-Process -FilePath $dest
+  Start-Process -FilePath 'wscript.exe' -ArgumentList "`"$vbs`"" -WindowStyle Hidden
   Write-Host "Отключение автозапуска: удалите ярлык или запустите uninstall.ps1"
 } catch {
   Write-Error ("Установка DauysAgent не выполнена: {0}" -f $_.Exception.Message)

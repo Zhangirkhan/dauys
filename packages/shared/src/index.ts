@@ -278,6 +278,69 @@ export const trustSchema = z
   })
   .strict();
 export type Trust = z.infer<typeof trustSchema>;
+
+/** Local Windows app catalog — paths stay on the agent only. */
+export const localAppExeSchema = z
+  .object({
+    kind: z.literal("exe"),
+    id: idSchema,
+    name: appNameSchema,
+    aliases: z.array(text).max(30),
+    executable: safePathSchema,
+    enabled: z.boolean(),
+  })
+  .strict();
+export const localAppSystemSchema = z
+  .object({
+    kind: z.literal("system"),
+    id: z.enum(["settings", "explorer"]),
+    name: appNameSchema,
+    aliases: z.array(text).max(30),
+    enabled: z.boolean(),
+  })
+  .strict();
+export const localAppSchema = z.discriminatedUnion("kind", [
+  localAppExeSchema,
+  localAppSystemSchema,
+]);
+export const localAppsFileSchema = z
+  .object({
+    version: z.literal(1),
+    apps: z.array(localAppSchema).max(200),
+  })
+  .strict();
+export type LocalApp = z.infer<typeof localAppSchema>;
+export type LocalAppsFile = z.infer<typeof localAppsFileSchema>;
+
+/** Agent → server: names/aliases only (never executables). */
+export const appsCatalogSchema = z
+  .object({
+    type: z.literal("apps_catalog"),
+    applications: z
+      .array(
+        z
+          .object({
+            id: idSchema,
+            name: appNameSchema,
+            aliases: z.array(text).max(30),
+          })
+          .strict(),
+      )
+      .max(200),
+  })
+  .strict();
+export type AppsCatalog = z.infer<typeof appsCatalogSchema>;
+
+export const agentConfigSchema = z
+  .object({
+    serverUrl: z.string().url().max(2048),
+    allowedDirectories: z.array(safePathSchema).max(50),
+    setupCompleted: z.boolean(),
+    autostart: z.boolean().default(true),
+    agentVersion: z.string().max(40).optional(),
+  })
+  .strict();
+export type AgentConfig = z.infer<typeof agentConfigSchema>;
 export function requiresConfirmation(action: Action): boolean {
   return [
     "close_application",

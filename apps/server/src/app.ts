@@ -14,6 +14,7 @@ import { z, ZodError } from "zod";
 import {
   actionSchema,
   agentHelloSchema,
+  appsCatalogSchema,
   decisionSchema,
   registrySchema,
   resultSchema,
@@ -770,6 +771,22 @@ export async function createApp(o: AppOptions) {
     ok(o.store.history(client(req).agentId)),
   );
   app.get("/api/devices", async (req) => ok(deviceList(client(req).agentId)));
+  // Agent polls pairing without phone cookie; never expose tokens/bootstrap.
+  app.get("/api/agent/status", async (req) => {
+    const d = authenticate(req);
+    if (d.role !== "agent")
+      throw new ApiError(403, "AGENT_REQUIRED", "Требуется токен агента");
+    const linked = o.store
+      .devices(d.agentId)
+      .filter((x) => x.role === "client" && !x.revoked);
+    const onlineClients = [...clients.values()].filter(
+      (c) => c.agentId === d.agentId && c.role === "client",
+    ).length;
+    return ok({
+      paired: linked.length > 0,
+      clients: onlineClients,
+    });
+  });
   app.delete("/api/devices/:id", async (req, reply) => {
     const d = client(req);
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
@@ -855,6 +872,24 @@ export async function createApp(o: AppOptions) {
             const hello = agentHelloSchema.parse(rawMessage);
             capabilities.set(d.id, hello);
             notifyDevices(d.id);
+            return;
+          }
+          // Windows agent pushes name/aliases only — registry.path from clients is ignored (local exe map stays on PC).
+          if (rawMessage.type === "apps_catalog") {
+            const apps = Array.isArray(rawMessage.applications)
+              ? rawMessage.applications.map(
+                  (a: { id?: unknown; name?: unknown; aliases?: unknown }) => ({
+                    id: a.id,
+                    name: a.name,
+                    aliases: a.aliases,
+                  }),
+                )
+              : [];
+            const catalog = appsCatalogSchema.parse({
+              type: "apps_catalog",
+              applications: apps,
+            });
+            o.registry.mergeAppsCatalog(catalog.applications);
             return;
           }
           const msg = z
