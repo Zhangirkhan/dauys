@@ -113,6 +113,86 @@ input {
 .spin {
   animation: spin 1s linear infinite;
 }
+.voice-status {
+  width: min(88vw, 360px);
+  display: grid;
+  gap: 10px;
+  text-align: center;
+  color: #c5d4cb;
+}
+.voice-stage {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8fa897;
+}
+.voice-transcript {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.35;
+  color: #e8f0ea;
+  word-break: break-word;
+}
+.voice-hint {
+  margin: 0;
+  font-size: 14px;
+  color: #9bb0a2;
+  word-break: break-word;
+}
+.voice-result {
+  margin: 0;
+  font-size: 15px;
+  color: #b6dcae;
+  word-break: break-word;
+}
+.voice-error {
+  margin: 0;
+  font-size: 15px;
+  color: #edb7ac;
+  word-break: break-word;
+}
+.voice-actions {
+  display: grid;
+  gap: 10px;
+  justify-items: stretch;
+}
+.voice-actions button,
+.voice-clarify button {
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 14px;
+  background: #b6dcae;
+  color: #26382b;
+  cursor: pointer;
+}
+.voice-actions button.is-secondary {
+  background: transparent;
+  border: 1px solid #3a4a40;
+  color: #c5d4cb;
+}
+.voice-actions button:disabled,
+.voice-clarify button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.voice-options {
+  display: grid;
+  gap: 8px;
+}
+.voice-clarify {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+.voice-clarify input {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid #35443a;
+  border-radius: 14px;
+  background: #151b19;
+  color: #e9f0eb;
+}
 @keyframes spin {
   to {
     transform: rotate(360deg);

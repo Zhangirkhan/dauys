@@ -8,9 +8,9 @@ export default defineConfig({
       registerType: "prompt",
       includeAssets: ["icon-192.png", "icon-512.png"],
       manifest: {
-        name: "Рядом — помощник для Mac",
+        name: "Рядом — помощник для компьютера",
         short_name: "Рядом",
-        description: "Ваш Mac — на расстоянии голоса",
+        description: "Ваш компьютер — на расстоянии голоса",
         lang: "ru",
         theme_color: "#101315",
         background_color: "#101315",

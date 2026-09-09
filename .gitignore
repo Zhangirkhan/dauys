@@ -1,9 +1,15 @@
 node_modules/
 dist/
 .env
+.env.prod-copy.DO-NOT-USE
 .venv/
 data/*
 !data/.gitkeep
+data/prod-copy-DO-NOT-USE/
+data-windows-work/*
+!data-windows-work/README.txt
+!data-windows-work/registry.json
+!data-windows-work/agent-trust.json
 *.log
 playwright-report/
 test-results/

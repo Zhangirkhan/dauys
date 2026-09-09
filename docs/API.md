@@ -20,7 +20,7 @@
 | DELETE /api/devices/:id        | UUID устройства пространства         | `{revoked:id}`; закрывает WS, очищает cookie при самоотзыве                                                                       |
 | GET /api/config                | —                                    | Registry                                                                                                                          |
 | PUT /api/config                | полный Registry                      | Проверенный и сохранённый Registry; во время команды 409                                                                          |
-| GET /api/runtime               | —                                    | `{stt,intent,realActions,deviceId}` для отображения режима                                                                        |
+| GET /api/runtime               | —                                    | `{stt,intent,realActions,platform,supportedActions,deviceId}`                                                                    |
 | WS /ws/client                  | cookie + точный Origin               | События command и devices                                                                                                         |
 | WS /ws/mac-agent               | Bearer Mac                           | Hello, command envelope и result                                                                                                  |
 
@@ -78,7 +78,7 @@ Polling: `GET /api/commands/<data.id>` с той же cookie. Более удо�
 
 Объекты здесь сокращены для чтения; фактически отправляется полный CommandRecord/Device. Телефон не отправляет команды через WS: изменения идут через валидируемый HTTP API.
 
-Mac при подключении отправляет `{type:"hello",realActions:boolean,shortcuts:[{id,name}]}`; локальные executable/args никогда не отправляются модели.
+Mac/Windows-агент при подключении отправляет `{type:"hello",realActions,shortcuts,platform?,supportedActions?}`; старые агенты без platform/supportedActions считаются полностью совместимыми. Локальные executable/args никогда не отправляются модели.
 
 Сервер → Mac:
 

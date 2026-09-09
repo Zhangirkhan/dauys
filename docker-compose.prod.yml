@@ -3,7 +3,7 @@ services:
     image: onerahmet/openai-whisper-asr-webservice:latest
     restart: unless-stopped
     environment:
-      ASR_MODEL: small
+      ASR_MODEL: base
       ASR_ENGINE: faster_whisper
     volumes:
       - whisper-cache:/root/.cache
