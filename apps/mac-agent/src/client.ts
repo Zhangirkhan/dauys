@@ -1,8 +1,10 @@
 import { WebSocket } from "ws";
 import { z } from "zod";
-import type { MacExecutor } from "./executor.js";
+import type { AgentExecutor } from "./platform.js";
 import type { ExecutionLedger } from "./safety.js";
-import type { Logger } from "pino";
+import type { AgentLogger } from "./logger.js";
+import type { AllowedAction, AgentPlatform } from "../../../packages/shared/src/index.js";
+
 export class AgentClient {
   private ws?: WebSocket;
   private stopped = false;
@@ -12,13 +14,16 @@ export class AgentClient {
     private o: {
       url: string;
       token: string;
-      executor: MacExecutor;
+      executor: AgentExecutor;
       ledger: ExecutionLedger;
-      logger: Logger;
+      logger: AgentLogger;
       capabilities?: {
         realActions: boolean;
         shortcuts: Array<{ id: string; name: string }>;
+        platform?: AgentPlatform;
+        supportedActions?: AllowedAction[];
       };
+      onAuthFailure?: () => void;
     },
   ) {}
   connect() {
@@ -33,13 +38,19 @@ export class AgentClient {
     let lastSeen = Date.now();
     ws.on("open", () => {
       this.delay = 500;
+      const caps = this.o.capabilities ?? { realActions: false, shortcuts: [] };
       ws.send(
         JSON.stringify({
           type: "hello",
-          ...(this.o.capabilities ?? { realActions: false, shortcuts: [] }),
+          realActions: caps.realActions,
+          shortcuts: caps.shortcuts,
+          ...(caps.platform ? { platform: caps.platform } : {}),
+          ...(caps.supportedActions
+            ? { supportedActions: caps.supportedActions }
+            : {}),
         }),
       );
-      this.o.logger.info("Mac-агент подключён");
+      this.o.logger.info("Агент подключён");
     });
     ws.on("ping", () => {
       lastSeen = Date.now();
@@ -88,8 +99,9 @@ export class AgentClient {
       if (res.statusCode === 401 || res.statusCode === 403) {
         this.stopped = true;
         this.o.logger.error(
-          "Токен отозван или неверен. Для новой привязки выполните pnpm dev:agent -- --reset.",
+          "Токен отозван или неверен. Для новой привязки запустите агент с --reset.",
         );
+        this.o.onAuthFailure?.();
       }
       res.resume();
       ws.terminate();

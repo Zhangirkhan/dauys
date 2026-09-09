@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { createApp } from "./app.js";
 import { Store, RegistryFile } from "./store.js";
-import { DeepSeekResolver, MockIntentResolver } from "./intent.js";
+import { DeepSeekResolver, HybridIntentResolver, MockIntentResolver } from "./intent.js";
 import { LocalIntentResolver } from "./local-intent.js";
 import {
   HttpWhisperProvider,
@@ -26,11 +26,14 @@ const app = await createApp({
   registry: new RegistryFile(env.REGISTRY_PATH ?? "./data/registry.json"),
   resolver:
     intentProvider === "deepseek"
-      ? new DeepSeekResolver({
-          key: env.DEEPSEEK_API_KEY,
-          baseURL: env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
-          model: env.DEEPSEEK_MODEL,
-        })
+      ? new HybridIntentResolver(
+          new LocalIntentResolver(),
+          new DeepSeekResolver({
+            key: env.DEEPSEEK_API_KEY,
+            baseURL: env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
+            model: env.DEEPSEEK_MODEL,
+          }),
+        )
       : intentProvider === "local"
         ? new LocalIntentResolver()
         : new MockIntentResolver(),

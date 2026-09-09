@@ -4,10 +4,56 @@ import type { CommandRecord } from "@voice/shared";
 import { api, ApiError, post } from "./api";
 import type { Device } from "./Settings";
 
-const terminal = (command: CommandRecord) =>
-  ["done", "error", "cancelled", "clarification", "confirmation"].includes(
-    command.status,
-  );
+/** Конечные статусы: polling можно остановить. */
+const finished = (command: CommandRecord) =>
+  ["done", "error", "cancelled"].includes(command.status);
+
+/** Пока команда жива (в т.ч. confirmation/clarification) — микрофон занят. */
+const inFlight = (command: CommandRecord) => !finished(command);
+
+function stageLabel(
+  recording: boolean,
+  sending: boolean,
+  command?: CommandRecord,
+): string {
+  if (recording) return "Запись";
+  if (sending) return "Отправка";
+  if (!command) return "";
+  switch (command.status) {
+    case "transcribing":
+      return "Распознавание";
+    case "processing":
+      return "Распознавание";
+    case "executing":
+      return "Выполнение";
+    case "confirmation":
+      return "Подтверждение";
+    case "clarification":
+      return "Уточнение";
+    case "done":
+      return "Готово";
+    case "error":
+      return "Ошибка";
+    case "cancelled":
+      return "Отменено";
+    default:
+      return "Выполнение";
+  }
+}
+
+function commandHint(command: CommandRecord): string {
+  const action = command.command?.action;
+  const params = command.command?.parameters as
+    | Record<string, string | undefined>
+    | undefined;
+  if (action === "open_url" && params?.url) return `Открыть ${params.url}`;
+  if (action === "open_application" && params?.applicationId)
+    return `Открыть приложение: ${params.applicationId}`;
+  if (action === "open_named_item" && params?.query)
+    return `Открыть: ${params.query}`;
+  if (action) return action;
+  return command.text || "Команда";
+}
 
 export function App() {
   const [paired, setPaired] = useState(false);
@@ -17,6 +63,8 @@ export function App() {
   const [sending, setSending] = useState(false);
   const [current, setCurrent] = useState<CommandRecord>();
   const [failed, setFailed] = useState(false);
+  const [clarifyAnswer, setClarifyAnswer] = useState("");
+  const [acting, setActing] = useState(false);
   const [code, setCode] = useState("");
   const recorder = useRef<MediaRecorder | null>(null);
   const stream = useRef<MediaStream | null>(null);
@@ -25,7 +73,7 @@ export function App() {
   const audioContext = useRef<AudioContext | null>(null);
   const discard = useRef(false);
 
-  const working = sending || !!(current && !terminal(current));
+  const working = sending || !!(current && inFlight(current));
   const update = (command: CommandRecord) => {
     setCurrent(command);
     setFailed(command.status === "error");
@@ -86,13 +134,14 @@ export function App() {
     };
   }, [paired]);
 
+  // Poll until done/error/cancelled (включая confirmation/clarification → итог).
   useEffect(() => {
-    if (!current || terminal(current)) return;
+    if (!current || finished(current)) return;
     const poll = setInterval(() => {
       void api<CommandRecord>("/api/commands/" + current.id)
         .then(update)
         .catch(() => setFailed(true));
-    }, 1500);
+    }, 300);
     return () => clearInterval(poll);
   }, [current?.id, current?.status]);
 
@@ -169,7 +218,7 @@ export function App() {
         heardVoice = true;
         lastVoiceAt = now;
       }
-      if (heardVoice && now - lastVoiceAt > 950 && now - startedAt > 1200) {
+      if (heardVoice && now - lastVoiceAt > 550 && now - startedAt > 800) {
         stopRecording();
         return;
       }
@@ -181,6 +230,7 @@ export function App() {
   async function startRecording() {
     setFailed(false);
     setCurrent(undefined);
+    setClarifyAnswer("");
     discard.current = false;
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       setFailed(true);
@@ -217,12 +267,64 @@ export function App() {
       mediaRecorder.start(200);
       setRecording(true);
       detectSilence(mediaStream);
-      timeout.current = setTimeout(() => stopRecording(), 20_000);
+      timeout.current = setTimeout(() => stopRecording(), 8_000);
     } catch {
       setFailed(true);
       setRecording(false);
     }
   }
+
+  async function confirmCommand() {
+    if (!current) return;
+    setActing(true);
+    try {
+      update(
+        await post<CommandRecord>("/api/commands/" + current.id + "/confirm", {
+          approved: true,
+        }),
+      );
+    } catch {
+      setFailed(true);
+    } finally {
+      setActing(false);
+    }
+  }
+
+  async function cancelCommand() {
+    if (!current) return;
+    setActing(true);
+    try {
+      update(
+        await post<CommandRecord>("/api/commands/" + current.id + "/cancel", {}),
+      );
+    } catch {
+      setFailed(true);
+    } finally {
+      setActing(false);
+    }
+  }
+
+  async function clarifyCommand(answer: string) {
+    if (!current || !answer.trim()) return;
+    setActing(true);
+    try {
+      update(
+        await post<CommandRecord>("/api/commands/" + current.id + "/clarify", {
+          answer: answer.trim(),
+        }),
+      );
+      setClarifyAnswer("");
+    } catch {
+      setFailed(true);
+    } finally {
+      setActing(false);
+    }
+  }
+
+  const label = stageLabel(recording, sending, current);
+  const outcome =
+    current?.result?.message ||
+    (failed && !current ? "Не удалось выполнить запрос" : "");
 
   if (loading)
     return (
@@ -258,7 +360,7 @@ export function App() {
       <button
         className={`single-record ${recording ? "is-recording" : ""} ${working ? "is-working" : ""} ${failed || !online ? "is-failed" : ""}`}
         aria-label={recording ? "Остановить запись" : "Записать команду"}
-        disabled={!online || working}
+        disabled={!online || working || acting}
         onClick={() => (recording ? stopRecording() : void startRecording())}
       >
         {recording ? (
@@ -269,6 +371,96 @@ export function App() {
           <Mic />
         )}
       </button>
+
+      <div className="voice-status" aria-live="polite">
+        {label ? <p className="voice-stage">{label}</p> : null}
+        {!online ? (
+          <p className="voice-hint">Агент офлайн</p>
+        ) : null}
+        {current?.text ? (
+          <p className="voice-transcript">{current.text}</p>
+        ) : null}
+        {outcome ? (
+          <p
+            className={
+              current?.status === "error" || failed
+                ? "voice-error"
+                : "voice-result"
+            }
+          >
+            {outcome}
+          </p>
+        ) : null}
+
+        {current?.status === "confirmation" ? (
+          <div className="voice-actions">
+            <p className="voice-hint">{commandHint(current)}</p>
+            <button
+              type="button"
+              disabled={acting}
+              onClick={() => void confirmCommand()}
+            >
+              Подтвердить
+            </button>
+            <button
+              type="button"
+              className="is-secondary"
+              disabled={acting}
+              onClick={() => void cancelCommand()}
+            >
+              Отмена
+            </button>
+          </div>
+        ) : null}
+
+        {current?.status === "clarification" ? (
+          <div className="voice-actions">
+            {current.question ? (
+              <p className="voice-hint">{current.question}</p>
+            ) : null}
+            {current.options?.length ? (
+              <div className="voice-options">
+                {current.options.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    disabled={acting}
+                    onClick={() => void clarifyCommand(option.id)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <form
+              className="voice-clarify"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void clarifyCommand(clarifyAnswer);
+              }}
+            >
+              <input
+                aria-label="Ответ"
+                value={clarifyAnswer}
+                disabled={acting}
+                onChange={(event) => setClarifyAnswer(event.target.value)}
+                placeholder="Ответ…"
+              />
+              <button type="submit" disabled={acting || !clarifyAnswer.trim()}>
+                Отправить
+              </button>
+            </form>
+            <button
+              type="button"
+              className="is-secondary"
+              disabled={acting}
+              onClick={() => void cancelCommand()}
+            >
+              Отмена
+            </button>
+          </div>
+        ) : null}
+      </div>
     </main>
   );
 }

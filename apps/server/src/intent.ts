@@ -9,6 +9,7 @@ import {
   type Registry,
   type Action,
 } from "../../../packages/shared/src/index.js";
+import { extractSpokenUrl } from "./spoken-url.js";
 export type IntentInput = {
   text: string;
   registry: Registry;
@@ -39,7 +40,7 @@ export class DeepSeekResolver implements IntentResolver {
     const client = new OpenAI({
       apiKey: this.options.key,
       baseURL: this.options.baseURL,
-      timeout: 18000,
+      timeout: 4000,
       maxRetries: 0,
     });
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
@@ -50,10 +51,11 @@ export class DeepSeekResolver implements IntentResolver {
           "\nДля «открой Chrome» используй open_application. new_browser_tab используй только при явной просьбе открыть новую вкладку." +
           "\n«Открой Cursor» / «открой курсор» → open_application без newWindow: только вывести уже открытый Cursor на передний план, не создавать ещё одно окно с тем же проектом." +
           "\n«Открой новый проект в Cursor», «новое окно Cursor», «пустой проект» → open_application {applicationId:\"cursor\", newWindow:true}." +
-          "\n«Открой проект NAME в Cursor»: если NAME есть в реестре — open_project с этим projectId; если нет — open_named_item {query:NAME, kind:\"folder\", applicationId:\"cursor\"}. Не подставляй другой проект." +
-          "\nЛюбую папку или файл по произнесённому названию открывай через open_named_item: query — только это название, kind=folder|file|any. Примеры: «Открой папку Загрузки» → open_named_item {query:\"Загрузки\",kind:\"folder\"}; «Открой файл отчет» → {query:\"отчет\",kind:\"file\"}; «Открой документы» → {query:\"документы\",kind:\"any\"}." +
+          "\n«Открой проект NAME в Cursor»: если NAME есть в реестре — open_project с этим projectId; если нет — open_editor_project {query:NAME, applicationId:\"cursor\"}. Не подставляй другой проект." +
+          "\nopen_editor_project ищет проект среди всех, доступных на Mac, включая удалённые по SSH (Cursor Remote-SSH). Передавай только произнесённое название в query; путь и адрес подставит сам Mac. Если пользователь назвал сервер («на проджектс», «на сервере ermart») — добавь host с этим именем. Никогда не выдумывай URI и не пиши vscode-remote:// сам." +
+          "\nЛюбую папку или файл по произнесённому названию открывай через open_named_item: query — только это название, kind=folder|file|any. Примеры: «Открой папку Загрузки» → open_named_item {query:\"Загрузки\",kind:\"folder\"}; «Открой папку один» / «папку 1» → {query:\"один\",kind:\"folder\"}; «Открой файл отчет» → {query:\"отчет\",kind:\"file\"}; «Открой документы» → {query:\"документы\",kind:\"any\"}. Не требуй точного написания: цифры словами, опечатки и любое расширение файла допустимы." +
           "\nНикогда не подставляй activeProject и не бери путь BetGPT или другого проекта из реестра, если пользователь не назвал именно этот проект. open_folder с абсолютным путём — только для «папку проекта <имя из реестра>». open_project — только если назван проект, а не произвольная папка." +
-          "\nJSON schema действий: " +
+          "\nСайт по произношению: «открой в хроме егов.кз / egov точка кз / госуслуги» → open_url {url:\"https://egov.kz\", applicationId:\"chrome\"}. Кириллицу в домене транслитерируй (егов.кз → egov.kz), добавь https://. Не подставляй сайт проекта из реестра, если назван конкретный домен. «Открой сайт» без имени — тогда URL из реестра активного проекта. Не открывай поиск кириллической строкой." +
           JSON.stringify(zodToJsonSchema(actionSchema)) +
           "\nJSON schema ответа: " +
           JSON.stringify(zodToJsonSchema(decisionSchema)),
@@ -71,7 +73,7 @@ export class DeepSeekResolver implements IntentResolver {
           messages,
           response_format: { type: "json_object" },
           temperature: 0,
-          max_tokens: 1200,
+          max_tokens: 500,
         });
         const raw = completion.choices[0]?.message.content ?? "";
         try {
@@ -99,6 +101,49 @@ export class DeepSeekResolver implements IntentResolver {
       "DeepSeek дважды вернул невалидную команду: " +
         String(failure).slice(0, 300),
     );
+  }
+}
+const FAST_LOCAL_ACTIONS = new Set([
+  "open_application",
+  "close_application",
+  "open_project",
+  "open_file",
+  "open_folder",
+  "open_named_item",
+  "open_url",
+  "new_browser_tab",
+  "get_battery_status",
+  "get_active_application",
+  "set_volume",
+  "lock_screen",
+]);
+export class HybridIntentResolver implements IntentResolver {
+  constructor(
+    private local: IntentResolver,
+    private cloud: IntentResolver,
+    private cloudTimeoutMs = 3500,
+  ) {}
+  async resolve(input: IntentInput) {
+    const local = await this.local.resolve(input);
+    if (local.type === "reject") return local;
+    if (
+      local.type === "execute" &&
+      FAST_LOCAL_ACTIONS.has(local.action)
+    )
+      return local;
+    try {
+      return await Promise.race([
+        this.cloud.resolve(input),
+        new Promise<AssistantDecision>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("cloud-timeout")),
+            this.cloudTimeoutMs,
+          ),
+        ),
+      ]);
+    } catch {
+      return local;
+    }
   }
 }
 const norm = (s: string) => s.toLocaleLowerCase("ru").replace(/ё/g, "е");
@@ -152,6 +197,15 @@ export class MockIntentResolver implements IntentResolver {
       )
     )
       return { type: "reject", reason: "Это действие запрещено в MVP." };
+    const spokenUrl = extractSpokenUrl(
+      pending ? pending.originalText + " " + text : text,
+      registry,
+    );
+    if (spokenUrl)
+      return execute(
+        { action: "open_url", parameters: spokenUrl },
+        "Открываю " + spokenUrl.url,
+      );
     const projects = matchAliases(text, registry.projects);
     let p =
       projects[0] ??
@@ -233,7 +287,7 @@ export class MockIntentResolver implements IntentResolver {
         },
         "Ищу документы",
       );
-    if (p && /сайт|url|браузер|локальн/.test(q)) {
+    if (p && /сайт|url|браузер|локальн/.test(q) && !/егов|egov|\.kz|\.com|точка /.test(q)) {
       const url = /локальн/.test(q)
         ? p.urls.local
         : (p.urls.production ?? p.urls.local);

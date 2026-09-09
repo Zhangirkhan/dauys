@@ -1,14 +1,22 @@
 import { z } from "zod";
 export const idSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/);
 const text = z.string().min(1).max(500);
+/** Absolute POSIX (`/…`) or Windows drive (`C:\…` / `C:/…`). No UNC, ADS, or drive-relative. */
+export function isSafeAbsolutePath(v: string): boolean {
+  if (!v || /[\x00-\x1f]/.test(v)) return false;
+  if (v.startsWith("/")) return !v.startsWith("//");
+  if (!/^[A-Za-z]:[\\/]/.test(v)) return false;
+  if (v.slice(2).includes(":")) return false;
+  if (/^[\\/]{2}/.test(v) || /^[A-Za-z]:[^\\/]/.test(v)) return false;
+  return true;
+}
 export const safePathSchema = z
   .string()
   .min(1)
   .max(2048)
-  .refine(
-    (v) => v.startsWith("/") && !/[\x00-\x1f]/.test(v),
-    "Нужен абсолютный путь без управляющих символов",
-  );
+  .refine(isSafeAbsolutePath, "Нужен абсолютный путь без управляющих символов");
+export const agentPlatformSchema = z.enum(["darwin", "win32", "linux"]);
+export type AgentPlatform = z.infer<typeof agentPlatformSchema>;
 export const safeUrlSchema = z
   .string()
   .max(2048)
@@ -100,8 +108,34 @@ export const actionSchema = z.discriminatedUnion("action", [
     .strict(),
   z
     .object({
+      action: z.literal("open_editor_project"),
+      parameters: z
+        .object({
+          query: z.string().trim().max(200).default(""),
+          projectKey: z
+            .string()
+            .regex(/^[a-f0-9]{12}$/)
+            .optional(),
+          host: z.string().max(120).optional(),
+          applicationId: idSchema.optional(),
+          newWindow: z.boolean().optional(),
+        })
+        .strict()
+        .refine(
+          (v) => !!v.query || !!v.projectKey,
+          "Нужно название проекта или его ключ",
+        ),
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal("open_url"),
-      parameters: z.object({ url: safeUrlSchema }).strict(),
+      parameters: z
+        .object({
+          url: safeUrlSchema,
+          applicationId: idSchema.optional(),
+        })
+        .strict(),
     })
     .strict(),
   z
@@ -260,6 +294,8 @@ export const fileSchema = z
     name: z.string(),
     path: safePathSchema,
     modifiedAt: z.string(),
+    kind: z.enum(["file", "folder", "project"]).optional(),
+    host: z.string().max(120).optional(),
   })
   .strict();
 export type FileMatch = z.infer<typeof fileSchema>;
@@ -287,6 +323,25 @@ export const envelopeSchema = z
     "TTL максимум 60 секунд",
   );
 export type Envelope = z.infer<typeof envelopeSchema>;
+export const agentHelloSchema = z
+  .object({
+    type: z.literal("hello"),
+    realActions: z.boolean(),
+    shortcuts: z
+      .array(
+        z
+          .object({
+            id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/),
+            name: z.string().min(1).max(500),
+          })
+          .strict(),
+      )
+      .max(100),
+    platform: agentPlatformSchema.optional(),
+    supportedActions: z.array(z.enum(actions as [AllowedAction, ...AllowedAction[]])).max(50).optional(),
+  })
+  .strict();
+export type AgentHello = z.infer<typeof agentHelloSchema>;
 export type Context = {
   activeProject?: string;
   lastApplication?: string;

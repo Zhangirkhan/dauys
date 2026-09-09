@@ -1,4 +1,4 @@
-# Рядом — голосовой помощник для Mac
+# Рядом — голосовой помощник для Mac и Windows
 
 Рабочий TypeScript MVP: устанавливаемая PWA на телефоне записывает короткую команду, отдельный локальный Whisper распознаёт речь, DeepSeek выбирает типизированное действие, а Mac-агент выполняет его после локальной проверки. Есть полностью автономный mock-режим без API-ключей и без реальных системных действий.
 
@@ -32,7 +32,7 @@ pnpm dev
 | `pnpm lint`              | ESLint                                                        |
 | `pnpm typecheck`         | Проверка всех TypeScript-пакетов                              |
 | `pnpm test`              | Unit + интеграционные тесты, реальные localhost WebSocket     |
-| `pnpm build`             | Production PWA, backend и агент                               |
+| `pnpm build:agent`       | Собрать macOS-бинарник `dist/macos/dauys-agent`               |
 | `pnpm start`             | Собранное приложение: PWA на 8787 + агент                     |
 | `pnpm test:browser`      | Браузерная проверка при работающем `pnpm dev`                 |
 | `node scripts/smoke.mjs` | Health + привязка + текстовая команда через работающий сервер |
@@ -41,18 +41,79 @@ pnpm dev
 
 После изменения серверных исходников или `.env` перезапустите соответствующий процесс. Vite обновляет интерфейс автоматически.
 
+## Mac-агент как программа
+
+На телефоне открывайте **https://dauys.esl.kz**. На Mac соберите и поставьте агент один раз:
+
+```bash
+pnpm build:agent
+# или явно: pnpm build:agent:macos
+dist/macos/install.sh
+```
+
+Агент ставится в `~/Applications/DauysAgent/`, стартует при входе в систему и сам поднимается после сбоя. Данные — в `~/Library/Application Support/DauysAgent/`, логи — `~/Library/Logs/dauys-agent.log`.
+
+При первом запуске появится диалог секрета (`AGENT_BOOTSTRAP_SECRET` с сервера) и диалог с 8-значным кодом. Код введите на https://dauys.esl.kz. Дальше секрет не нужен.
+
+```bash
+~/Applications/DauysAgent/dauys-agent --reset   # новая привязка
+~/Applications/DauysAgent/dauys-agent --pair    # новый код
+dist/macos/uninstall.sh                         # остановить
+dist/macos/uninstall.sh --purge                 # ещё и стереть токен
+```
+
+## Windows-агент
+
+Тот же сервер и PWA; на ПК ставится локальный агент (Windows 11 x64).  
+Пошаговая инструкция: `packaging/windows/BUILD-ON-WINDOWS.md` (сборка → тест → production).  
+Кратко: `packaging/windows/INSTALL.md`.  
+Архив для переноса на Windows: `pnpm pack:windows-transfer` → `dist/windows-transfer/*.zip`.  
+Комплект install-скриптов без `.exe`: `pnpm pack:windows-kit`.
+
+### Вариант A — SEA-бинарник (только на Windows 11 x64, Node 24+)
+
+```powershell
+pnpm install
+pnpm build:agent:windows
+cd dist\windows
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Бинарник: `%LOCALAPPDATA%\DauysAgent\bin\dauys-agent.exe`.  
+Данные и токен: `%LOCALAPPDATA%\DauysAgent\` (ACL только для текущего пользователя).  
+Автозапуск: ярлык в папке Startup пользователя (не служба Windows).  
+Удаление: `uninstall.ps1` или `uninstall.ps1 -Purge`.
+
+### Вариант B — из репозитория (Node ≥24)
+
+```powershell
+pnpm install
+copy .env.windows-work.example .env
+# SERVER_PUBLIC_URL / AGENT_BOOTSTRAP_SECRET тестового сервера
+# ALLOW_REAL_ACTIONS=true
+# ALLOWED_DIRECTORIES=C:/Users/YOU/Documents,C:/Users/YOU/Downloads,C:/Users/YOU/Projects
+# config/registry.windows.example.json → data-windows-work/registry.json (пути к .exe)
+pnpm dev:agent
+```
+
+На Windows у каждого приложения в реестре нужен полный путь к `.exe`. Пример: `config/registry.windows.example.json`.  
+`run_shortcut` на Windows — только id из `agent-trust.json` с записью в `processes` (не macOS Shortcuts).
+
+Smoke на Windows после привязки телефона: «Открой Telegram», «Открой проект …», «Какой заряд батареи» (на ПК без батареи — нормальный ответ).
+
 ## Структура и архитектура
 
 ```text
 apps/pwa/         React, MediaRecorder, настройки, manifest, service worker
 apps/server/      Fastify, pairing, pipeline, DeepSeek, STT, SQLite
-apps/mac-agent/   WebSocket, локальная политика, исполнение macOS, журнал ID
+apps/mac-agent/   Агент Mac/Windows: WS, политика, адаптеры ОС, журнал ID
 packages/shared/  Zod-схемы действий, сообщений и реестра
-config/           примеры проектов и доверенных процессов
-scripts/          запуск, подготовка .env, установка STT, Python-адаптер, smoke
-tests/           unit, integration, browser
-data/            приватные токены, БД, реестр, локальные снимки экрана
-docs/            API и заметки о проверках
+config/           примеры проектов (в т.ч. registry.windows.example.json)
+packaging/        macos/, windows/ install/uninstall
+scripts/          запуск, подготовка .env, установка STT, сборка агента, smoke
+tests/            unit, integration, browser
+data/             приватные токены, БД, реестр, локальные снимки экрана
+docs/             API и заметки о проверках
 ```
 
 ```mermaid
@@ -66,9 +127,9 @@ flowchart LR
   D --> V[Zod + политика риска]
   V --> Q{Нужно подтверждение?}
   Q -->|да| P
-  Q -->|подтверждено или не нужно| M[WebSocket / Mac-агент]
+  Q -->|подтверждено или не нужно| M[WebSocket / агент]
   M --> L[Локальная проверка + журнал ID]
-  L --> O[macOS]
+  L --> O[macOS / Windows]
   O --> R[Результат / выбор файлов]
   R --> C
   R --> P
@@ -82,15 +143,15 @@ SQLite используется через встроенный `node:sqlite` и
 
 ## Реальное открытие без DeepSeek
 
-Для команд открытия облачный ключ не обязателен. Режим `INTENT_PROVIDER=local` использует локальные правила и псевдонимы, а `STT_PROVIDER=local` распознаёт настоящую запись через Whisper. Также поддерживается `STT_PROVIDER=parakeet` с NVIDIA Parakeet. При `ALLOW_REAL_MAC_ACTIONS=true` агент действительно открывает приложения и проекты.
+Для команд открытия облачный ключ не обязателен. Режим `INTENT_PROVIDER=local` использует локальные правила и псевдонимы, а `STT_PROVIDER=local` распознаёт настоящую запись через Whisper. Также поддерживается `STT_PROVIDER=parakeet` с NVIDIA Parakeet. При `ALLOW_REAL_ACTIONS=true` (или совместимом `ALLOW_REAL_MAC_ACTIONS=true`) агент действительно открывает приложения и проекты.
 
 ```dotenv
 INTENT_PROVIDER=local
 STT_PROVIDER=local
-ALLOW_REAL_MAC_ACTIONS=true
+ALLOW_REAL_ACTIONS=true
 ```
 
-На этом Mac эти настройки уже включены, добавлены Cursor, Telegram, Safari, Chrome, WhatsApp, Discord и существующие проекты BetGPT, BetGPT Mobile, «Голосовой помощник». Пути находятся в приватном `data/registry.json`; прежняя конфигурация сохранена в `data/before-real-mode/`. Для переноса на другой Mac настройте его реальные пути и `ALLOWED_DIRECTORIES`.
+На этом Mac эти настройки уже включены, добавлены Cursor, Telegram, Safari, Chrome, WhatsApp, Discord и существующие проекты BetGPT, BetGPT Mobile, «Голосовой помощник». Пути находятся в приватном `data/registry.json`; прежняя конфигурация сохранена в `data/before-real-mode/`. Для переноса на другой Mac или Windows настройте реальные пути и `ALLOWED_DIRECTORIES`.
 
 Примеры: «Открой Telegram», «Открой проект бет в курсоре», «Открой мобильный проект в Cursor», «Открой помощник в курсоре». Открытие проекта не запускает его сервер. Локальный режим требует узнаваемого имени/псевдонима; неизвестное или неоднозначное название вызывает уточнение. Он не заменяет свободное понимание языка через DeepSeek. Подтверждения опасных действий сохраняются.
 
@@ -100,7 +161,7 @@ ALLOW_REAL_MAC_ACTIONS=true
 RUN_REAL_OPENING_TESTS=1 pnpm exec playwright test tests/browser/real-opening.spec.ts
 ```
 
-Обычный браузерный mock-сценарий автоматически пропускается при включённых реальных действиях, чтобы тест блокировки экрана не заблокировал рабочий Mac.
+Обычный браузерный mock-сценарий автоматически пропускается при включённых реальных действиях, чтобы тест блокировки экрана не заблокировал рабочий компьютер.
 
 ## Реальный режим
 
@@ -258,9 +319,9 @@ https://192.168.1.10:8443 {
 
 | Симптом                         | Решение                                                                                   |
 | ------------------------------- | ----------------------------------------------------------------------------------------- |
-| MacBook не в сети               | Запустить `pnpm dev:agent`, проверить SERVER_PUBLIC_URL, сон Mac, firewall                |
-| Код истёк / использован         | Перезапустить агент и ввести новый код; 5 попыток привязки в минуту                       |
-| Доступ отозван                  | Телефон привязать заново; для агента `pnpm dev:agent -- --reset` (создаёт новую identity) |
+| MacBook не в сети               | Проверить, что агент запущен (`launchctl print gui/$(id -u)/com.dauys.agent` или `pnpm dev:agent`), SERVER_PUBLIC_URL, сон Mac, firewall |
+| Код истёк / использован         | `dauys-agent --pair` или перезапустить агент; 5 попыток привязки в минуту                  |
+| Доступ отозван                  | Телефон привязать заново; для агента `dauys-agent --reset` (создаёт новую identity)        |
 | Ошибка Origin                   | Добавить точный адрес страницы с протоколом и портом в PWA_ORIGIN                         |
 | После привязки снова экран кода | Cookie Secure требует HTTPS; проверить адрес, cookie и прокси                             |
 | Нет микрофона                   | HTTPS/localhost, разрешение сайта, Safari/Chrome, альтернатива — текст                    |

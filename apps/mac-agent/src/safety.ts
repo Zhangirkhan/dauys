@@ -1,5 +1,5 @@
 import { realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, sep, extname } from "node:path";
+import { isAbsolute, relative, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
@@ -8,6 +8,7 @@ import {
   requiresConfirmation,
   type Envelope,
 } from "../../../packages/shared/src/index.js";
+import { guardWindowsPath } from "./windows/path.js";
 export const documentExtensions = new Set([
   ".pdf",
   ".ppt",
@@ -33,6 +34,12 @@ export const documentExtensions = new Set([
   ".mp4",
   ".mov",
 ]);
+/**
+ * `open` hands these to a shell, AppleScript or an installer, so a spoken name
+ * must never be able to reach them.
+ */
+const executable =
+  /\.(app|workflow|scptd|scpt|applescript|osascript|command|terminal|tool|action|pkg|mpkg|dmg|prefpane|plugin|kext|saver|jar|sh|bash|zsh|csh|ksh|fish|shortcut|webloc|url)$/i;
 export function isWithin(path: string, root: string) {
   const rel = relative(root, path);
   return (
@@ -40,11 +47,23 @@ export function isWithin(path: string, root: string) {
     (!rel.startsWith(".." + sep) && rel !== ".." && !isAbsolute(rel))
   );
 }
+function looksWindows(path: string, roots: string[]) {
+  return (
+    process.platform === "win32" ||
+    /^[A-Za-z]:[\\/]/.test(path) ||
+    roots.some((r) => /^[A-Za-z]:[\\/]/.test(r))
+  );
+}
 export async function guardPath(
   path: string,
   roots: string[],
   kind: "file" | "folder" | "project" = "file",
 ) {
+  if (looksWindows(path, roots)) {
+    return guardWindowsPath(path, roots, kind, {
+      allowUnc: process.env.ALLOW_UNC_PATHS === "true",
+    });
+  }
   if (!isAbsolute(path) || /[\x00-\x1f]/.test(path))
     throw new Error("Небезопасный путь");
   const actual = await realpath(path);
@@ -63,20 +82,12 @@ export async function guardPath(
     throw new Error(
       "Путь вне ALLOWED_DIRECTORIES. Добавьте нужный каталог локально в .env агента.",
     );
-  if (
-    actual
-      .split(sep)
-      .some((p) => p.startsWith(".") || /\.(app|workflow|scptd)$/i.test(p))
-  )
+  if (actual.split(sep).some((p) => p.startsWith(".") || executable.test(p)))
     throw new Error(
       "Скрытые файлы, пакеты приложений и автоматизации запрещены.",
     );
   const info = await stat(actual);
-  if (
-    kind === "file" &&
-    !info.isFile()
-  )
-    throw new Error("Ожидался файл");
+  if (kind === "file" && !info.isFile()) throw new Error("Ожидался файл");
   if (kind !== "file" && !info.isDirectory())
     throw new Error("Ожидалась папка");
   return actual;
@@ -87,7 +98,13 @@ export class ExecutionLedger {
     if (path !== ":memory:")
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
-    if (path !== ":memory:") chmodSync(path, 0o600);
+    if (path !== ":memory:") {
+      try {
+        chmodSync(path, 0o600);
+      } catch {
+        /* Windows ACL applied separately for agent data files */
+      }
+    }
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS executed(id TEXT PRIMARY KEY,expiresAt INTEGER)",
     );

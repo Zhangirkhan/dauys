@@ -13,17 +13,20 @@ import { tmpdir } from "node:os";
 import { z, ZodError } from "zod";
 import {
   actionSchema,
+  agentHelloSchema,
   decisionSchema,
   registrySchema,
   resultSchema,
   requiresConfirmation,
   type Action,
+  type AgentHello,
   type CommandRecord,
   type ExecutionResult,
 } from "../../../packages/shared/src/index.js";
 import { Store, RegistryFile, type Device } from "./store.js";
 import { type IntentResolver, ordinal } from "./intent.js";
 import { preferSpokenNamedItem } from "./named-item.js";
+import { preferSpokenUrl } from "./spoken-url.js";
 import type { SpeechToTextProvider } from "./stt.js";
 class ApiError extends Error {
   constructor(
@@ -77,10 +80,7 @@ export async function createApp(o: AppOptions) {
       .finally(() => jobs.delete(job));
     jobs.add(job);
   };
-  const capabilities = new Map<
-    string,
-    { shortcuts: Array<{ id: string; name: string }>; realActions: boolean }
-  >();
+  const capabilities = new Map<string, AgentHello>();
   const agents = new Map<string, WebSocket>();
   const clients = new Map<WebSocket, Device>();
   const waiting = new Map<string, string>();
@@ -97,6 +97,8 @@ export async function createApp(o: AppOptions) {
         d.role === "agent"
           ? agents.get(d.id)?.readyState === WebSocket.OPEN
           : [...clients.values()].some((c) => c.id === d.id),
+      platform:
+        d.role === "agent" ? (capabilities.get(d.id)?.platform ?? null) : null,
     }));
   const notifyDevices = (id: string) =>
     broadcast(id, { type: "devices", devices: deviceList(id) });
@@ -105,10 +107,36 @@ export async function createApp(o: AppOptions) {
     o.store.save(c);
     broadcast(c.agentId, { type: "command", command: c });
   };
+  const stage = (
+    c: CommandRecord,
+    name: string,
+    extra: Record<string, unknown> = {},
+  ) => {
+    app.log.info(
+      {
+        commandId: c.id,
+        agentId: c.agentId,
+        status: c.status,
+        stage: name,
+        action: c.command?.action,
+        ...extra,
+      },
+      "command stage",
+    );
+  };
   const fail = (c: CommandRecord, message: string) => {
     if (closing || terminal(c) || terminal(o.store.command(c.id) ?? c)) return;
     c.status = "error";
     c.result = { success: false, message };
+    app.log.warn(
+      {
+        commandId: c.id,
+        agentId: c.agentId,
+        action: c.command?.action,
+        message: message.slice(0, 200),
+      },
+      "command failed",
+    );
     save(c);
   };
   const authenticate = (req: FastifyRequest): Device => {
@@ -120,7 +148,7 @@ export async function createApp(o: AppOptions) {
       throw new ApiError(
         401,
         "UNAUTHORIZED",
-        "Привяжите устройство с помощью кода Mac-агента.",
+        "Привяжите устройство с помощью кода агента на компьютере.",
       );
     return d;
   };
@@ -216,6 +244,7 @@ export async function createApp(o: AppOptions) {
         break;
       }
       case "open_named_item":
+      case "open_editor_project":
         if (
           command.parameters.applicationId &&
           !registry.applications.some(
@@ -236,18 +265,39 @@ export async function createApp(o: AppOptions) {
       !c.confirmed
     ) {
       c.status = "confirmation";
+      stage(c, "confirmation", { action: c.command.action });
       save(c);
       return;
     }
     const ws = agents.get(c.agentId);
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      fail(c, "MacBook не подключён. Запустите pnpm dev:agent.");
+      fail(
+        c,
+        "Компьютер не подключён. Запустите агент Рядом на Mac или Windows.",
+      );
+      return;
+    }
+    const caps = capabilities.get(c.agentId);
+    if (
+      caps?.supportedActions &&
+      c.command &&
+      !caps.supportedActions.includes(c.command.action)
+    ) {
+      fail(
+        c,
+        "Действие «" +
+          c.command.action +
+          "» не поддерживается подключённым агентом (" +
+          (caps.platform ?? "unknown") +
+          ").",
+      );
       return;
     }
     c.status = "executing";
     save(c);
     const executionId = randomUUID();
     waiting.set(executionId, c.id);
+    stage(c, "dispatch", { executionId });
     ws.send(
       JSON.stringify({
         type: "command",
@@ -286,16 +336,20 @@ export async function createApp(o: AppOptions) {
       const registry = o.registry.get();
       const spokenText = answer ? c.text + " " + answer : c.text;
       const decision = decisionSchema.parse(
-        preferSpokenNamedItem(
+        preferSpokenUrl(
           spokenText,
           registry,
-          await o.resolver.resolve({
-            text: answer ?? c.text,
+          preferSpokenNamedItem(
+            spokenText,
             registry,
-            context: buildContext(c),
-            pending,
-            shortcuts: capabilities.get(c.agentId)?.shortcuts,
-          }),
+            await o.resolver.resolve({
+              text: answer ?? c.text,
+              registry,
+              context: buildContext(c),
+              pending,
+              shortcuts: capabilities.get(c.agentId)?.shortcuts,
+            }),
+          ),
         ),
       );
       if (closing) return;
@@ -303,6 +357,11 @@ export async function createApp(o: AppOptions) {
       if (!current || terminal(current)) return;
       active(c);
       c.decision = decision;
+      stage(c, "intent", {
+        decisionType: decision.type,
+        action: decision.type === "execute" ? decision.action : undefined,
+        textLen: (answer ?? c.text).length,
+      });
       if (decision.type === "reject") {
         fail(c, decision.reason);
         return;
@@ -311,6 +370,7 @@ export async function createApp(o: AppOptions) {
         c.status = "clarification";
         c.question = decision.question;
         c.options = decision.options;
+        stage(c, "clarification");
         save(c);
         return;
       }
@@ -318,8 +378,22 @@ export async function createApp(o: AppOptions) {
         action: decision.action,
         parameters: decision.parameters,
       });
+      if (
+        (requiresConfirmation(c.command) || decision.confirmationRequired) &&
+        !c.confirmed
+      ) {
+        stage(c, "confirmation-pending", { action: c.command.action });
+      }
       dispatch(c);
     } catch (error) {
+      app.log.error(
+        {
+          commandId: c.id,
+          message:
+            error instanceof Error ? error.message.slice(0, 200) : "unknown",
+        },
+        "intent background error",
+      );
       fail(c, error instanceof Error ? error.message : "Ошибка обработки");
     }
   };
@@ -366,6 +440,23 @@ export async function createApp(o: AppOptions) {
       ctx.searchResults = result.files ?? [];
       if (result.files?.length === 1) ctx.lastFile = result.files[0].path;
       o.store.saveContext(c.agentId, ctx);
+    }
+    if (
+      result.success &&
+      (c.command?.action === "open_named_item" ||
+        c.command?.action === "open_editor_project") &&
+      result.files &&
+      result.files.length > 1
+    ) {
+      c.files = result.files;
+      c.status = "clarification";
+      c.question = "Что открыть? Назовите номер.";
+      c.options = result.files.map((f) => ({
+        id: f.id,
+        label: f.name + " · " + (f.host ? f.host + ":" : "") + f.path,
+      }));
+      save(c);
+      return;
     }
     if (
       result.success &&
@@ -436,13 +527,13 @@ export async function createApp(o: AppOptions) {
     { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
     async (req) => {
       const body = z
-        .object({ name: z.string().min(1).max(80).default("MacBook") })
+        .object({ name: z.string().min(1).max(80).default("Компьютер") })
         .strict()
         .parse(req.body ?? {});
       const bearer = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
       let d = o.store.authenticate(bearer);
       if (d?.role === "client")
-        throw new ApiError(403, "AGENT_REQUIRED", "Код создаёт Mac-агент.");
+        throw new ApiError(403, "AGENT_REQUIRED", "Код создаёт агент на компьютере.");
       if (!d) {
         const a = Buffer.from(bearer),
           b = Buffer.from(o.bootstrapSecret);
@@ -450,7 +541,7 @@ export async function createApp(o: AppOptions) {
           throw new ApiError(
             401,
             "UNAUTHORIZED",
-            "Требуется bootstrap-секрет Mac-агента",
+            "Требуется bootstrap-секрет агента",
           );
         d = o.store.createDevice(body.name, "agent");
         const token = (d as Device & { token: string }).token;
@@ -521,11 +612,19 @@ export async function createApp(o: AppOptions) {
         c.files.find((f) => f.id === answer || f.name === answer) ??
         (i === undefined ? undefined : c.files[i]);
       if (!f) {
-        c.question = "Выберите файл из списка или скажите его номер.";
+        c.question = "Выберите файл или папку из списка или скажите номер.";
         save(c);
         return;
       }
-      c.command = { action: "open_file", parameters: { path: f.path } };
+      c.command =
+        f.kind === "project"
+          ? {
+              action: "open_editor_project",
+              parameters: { query: f.name, projectKey: f.id },
+            }
+          : f.kind === "folder"
+            ? { action: "open_folder", parameters: { path: f.path } }
+            : { action: "open_file", parameters: { path: f.path } };
       c.confirmed = false;
       dispatch(c);
       return;
@@ -567,20 +666,49 @@ export async function createApp(o: AppOptions) {
       throw e;
     }
     background(async () => {
+      const started = Date.now();
       try {
+        stage(c, "stt-start");
         const t = await o.stt.transcribe(join(dir, "input"));
+        const sttMs = Date.now() - started;
         if (closing) return;
         const current = o.store.command(c.id);
         if (!current || terminal(current)) return;
         active(c);
+        const text = (t.text ?? "").trim();
+        stage(c, "stt-done", { sttMs, textLen: text.length });
+        if (!pending && !text) {
+          fail(c, "Не удалось распознать речь. Повторите.");
+          return;
+        }
+        const intentStarted = Date.now();
         if (pending) {
           c.status = "clarification";
-          await clarify(c, t.text);
+          await clarify(c, text);
         } else {
-          c.text = t.text;
+          c.text = text;
           await resolveIntent(c);
         }
+        app.log.info(
+          {
+            commandId: c.id,
+            sttMs,
+            intentMs: Date.now() - intentStarted,
+            totalMs: Date.now() - started,
+            textLen: text.length,
+            status: (o.store.command(c.id) ?? c).status,
+            action: (o.store.command(c.id) ?? c).command?.action,
+          },
+          "voice pipeline",
+        );
       } catch (e) {
+        app.log.error(
+          {
+            commandId: c.id,
+            message: (e as Error).message?.slice(0, 200),
+          },
+          "voice pipeline failed",
+        );
         fail(c, (e as Error).message);
       } finally {
         await rm(dir, { recursive: true, force: true });
@@ -621,7 +749,7 @@ export async function createApp(o: AppOptions) {
       throw new ApiError(
         409,
         "ALREADY_SENT",
-        "Команда уже отправлена на Mac; отменить системное действие нельзя.",
+        "Команда уже отправлена на компьютер; отменить системное действие нельзя.",
       );
     c.status = "cancelled";
     c.result = { success: false, message: "Отменено" };
@@ -634,6 +762,8 @@ export async function createApp(o: AppOptions) {
       ...o.runtime,
       deviceId: d.id,
       realActions: capabilities.get(d.agentId)?.realActions ?? false,
+      platform: capabilities.get(d.agentId)?.platform ?? null,
+      supportedActions: capabilities.get(d.agentId)?.supportedActions ?? null,
     });
   });
   app.get("/api/history", async (req) =>
@@ -708,7 +838,7 @@ export async function createApp(o: AppOptions) {
       websocket: true,
       preValidation: async (req) => {
         if (authenticate(req).role !== "agent")
-          throw new ApiError(403, "AGENT_REQUIRED", "Требуется токен Mac");
+          throw new ApiError(403, "AGENT_REQUIRED", "Требуется токен агента");
       },
     },
     (ws, req) => {
@@ -722,24 +852,9 @@ export async function createApp(o: AppOptions) {
         try {
           const rawMessage = JSON.parse(raw.toString());
           if (rawMessage.type === "hello") {
-            const hello = z
-              .object({
-                type: z.literal("hello"),
-                realActions: z.boolean(),
-                shortcuts: z
-                  .array(
-                    z
-                      .object({
-                        id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/),
-                        name: z.string().min(1).max(500),
-                      })
-                      .strict(),
-                  )
-                  .max(100),
-              })
-              .strict()
-              .parse(rawMessage);
+            const hello = agentHelloSchema.parse(rawMessage);
             capabilities.set(d.id, hello);
+            notifyDevices(d.id);
             return;
           }
           const msg = z
@@ -755,6 +870,11 @@ export async function createApp(o: AppOptions) {
           const c = o.store.command(commandId);
           if (!c || c.agentId !== d.id || agents.get(d.id) !== ws) return;
           waiting.delete(msg.id);
+          stage(c, "result", {
+            executionId: msg.id,
+            success: msg.result.success,
+            message: (msg.result.message ?? "").slice(0, 120),
+          });
           finish(c, msg.result);
         } catch (e) {
           app.log.warn(
@@ -773,7 +893,7 @@ export async function createApp(o: AppOptions) {
             waiting.delete(eid);
             fail(
               c,
-              "Связь с Mac потеряна. Команда не повторяется автоматически; проверьте результат на Mac.",
+              "Связь с компьютером потеряна. Команда не повторяется автоматически; проверьте результат на компьютере.",
             );
           }
         }
