@@ -53,8 +53,8 @@ button:disabled{opacity:.45;cursor:not-allowed}
 #boot-err.show{display:block}
 `;
 
-/** Helpers must run BEFORE page script — previously page script was inside body and crashed on $. */
-function shell(title: string, markup: string, pageScript: string, token: string) {
+/** Helpers must run before page script. */
+function shell(title: string, markup: string, pageScript: string) {
   return `<!doctype html>
 <html lang="ru">
 <head>
@@ -83,13 +83,9 @@ ${markup}
   window.addEventListener("unhandledrejection", function(ev){
     showBoot("Ошибка: " + (ev.reason && ev.reason.message ? ev.reason.message : String(ev.reason)));
   });
-  var TOKEN = ${JSON.stringify(token)};
   async function api(path, opts){
     opts = opts || {};
-    var headers = Object.assign({
-      "Content-Type": "application/json",
-      "X-Dauys-Local": TOKEN
-    }, opts.headers || {});
+    var headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
     var r = await fetch(path, Object.assign({}, opts, { headers: headers }));
     var j = await r.json().catch(function(){ return { ok:false, error:{ message:"Некорректный ответ" } }; });
     if(!r.ok || j.ok === false) throw new Error((j.error && j.error.message) || ("HTTP " + r.status));
@@ -108,11 +104,11 @@ ${pageScript}
 }
 
 const WIZARD_MARKUP = `<h1>Dauys</h1>
-<p class="sub">Настройка агента Windows — один раз, затем агент работает в трее.</p>
+<p class="sub">Настройте агент один раз. После этого он работает в системном трее.</p>
 <div class="steps" id="steps"></div>
 <div class="card" id="panel"></div>`;
 
-/** Page script uses var api/$/$$ from outer IIFE scope — no nested template literals. */
+/** Page script uses var api/$/$$ from outer IIFE scope. */
 const WIZARD_SCRIPT = `
   var api = window.dauysApi;
   var $ = window.dauys$;
@@ -120,6 +116,7 @@ const WIZARD_SCRIPT = `
   var steps = ["Сервер","Привязка","Папки","Приложения","Проверка"];
   var step = 0;
   var pair = { code: "", expiresAt: 0 };
+  var bootstrap = "";
   var timer = null;
   var panel = $("#panel");
   var stepsEl = $("#steps");
@@ -135,7 +132,7 @@ const WIZARD_SCRIPT = `
     var msg = e instanceof Error ? e.message : String(e);
     if (/bootstrap.*at least 1|String must contain at least 1/i.test(msg))
       msg = "Введите bootstrap-секрет с сервера. Поле нельзя оставлять пустым при первой привязке.";
-    else if (/ZodError|invalid_type|\[\{/i.test(msg))
+    else if (/ZodError|invalid_type|\\[\\{/i.test(msg))
       msg = "Проверьте поля формы. При сохранённой привязке секрет можно не вводить.";
     el.textContent = msg;
   }
@@ -144,7 +141,7 @@ const WIZARD_SCRIPT = `
     return '<label>Адрес сервера</label>' +
       '<input id="url" type="url" value="https://dauys.esl.kz"/>' +
       (hasToken
-        ? '<p class="ok" id="tokenHint" style="margin:12px 0 0">Найдена сохранённая привязка — bootstrap-секрет не нужен.</p>' +
+        ? '<p class="ok" id="tokenHint" style="margin:12px 0 0">Найдена сохранённая привязка. Bootstrap-секрет не нужен.</p>' +
           '<label style="margin-top:12px" class="hide" id="bootLab">Bootstrap-секрет</label>' +
           '<input id="boot" type="password" class="hide" autocomplete="off"/>'
         : '<label style="margin-top:12px" id="bootLab">Bootstrap-секрет</label>' +
@@ -223,8 +220,7 @@ const WIZARD_SCRIPT = `
           $("#dot").className = "dot on";
           $("#stt").textContent = result.hasToken ? "Привязка найдена" : "Сервер доступен";
           sessionStorage.setItem("dauys_url", $("#url").value.trim());
-          if (bootVal) sessionStorage.setItem("dauys_boot", bootVal);
-          else sessionStorage.removeItem("dauys_boot");
+          bootstrap = bootVal;
           sessionStorage.setItem("dauys_has_token", result.hasToken ? "1" : "0");
           setTimeout(function(){ step = 1; render(); }, 400);
         }catch(e){
@@ -295,7 +291,7 @@ const WIZARD_SCRIPT = `
         $("#pdot").className = "dot wait";
         $("#ptxt").textContent = "Подключение к серверу";
         $("#next").disabled = true;
-        var boot = sessionStorage.getItem("dauys_boot") || "";
+        var boot = bootstrap;
         try{
           if (!saved && !boot.trim()) {
             throw new Error("Введите bootstrap-секрет с сервера. Поле нельзя оставлять пустым при первой привязке.");
@@ -320,7 +316,7 @@ const WIZARD_SCRIPT = `
           $("#ptxt").textContent = "Ожидаем привязку телефона";
           function tick(){
             var left = Math.max(0, Math.floor((pair.expiresAt - Date.now()) / 1000));
-            if ($("#cd")) $("#cd").textContent = left ? ("осталось " + left + " с") : "код истёк — запросите новый";
+            if ($("#cd")) $("#cd").textContent = left ? ("осталось " + left + " с") : "код истёк, запросите новый";
           }
           tick();
           timer = setInterval(tick, 1000);
@@ -417,7 +413,7 @@ const WIZARD_SCRIPT = `
       $("#done").onclick = async function(){
         try{
           await api("/api/setup/complete", { method: "POST", body: "{}" });
-          panel.innerHTML = '<p class="ok">Настройка завершена. Можно закрыть это окно — агент работает в трее.</p>';
+          panel.innerHTML = '<p class="ok">Настройка завершена. Можно закрыть это окно. Агент работает в трее.</p>';
         }catch(e){
           var err = $("#err");
           err.classList.remove("hide");
@@ -488,7 +484,7 @@ const SETTINGS_SCRIPT = `
       " · v" + esc(s.version || "?") + "</span></div>" +
       '<p class="mono" style="margin:8px 0 0;color:var(--muted)">' + esc(s.server || "") + "</p>";
     $("#url").value = s.server || "";
-    $("#folders").textContent = (s.folders && s.folders.length) ? s.folders.join("\\n") : "—";
+    $("#folders").textContent = (s.folders && s.folders.length) ? s.folders.join("\\n") : "нет выбранных папок";
     $("#autostart").textContent = s.autostart ? "Автозапуск: вкл" : "Автозапуск: выкл";
     $("#ops").textContent = (s.recentOps && s.recentOps.length)
       ? s.recentOps.map(function(o){ return o.at + "  " + o.action + "  " + o.message; }).join("\\n")
@@ -555,22 +551,22 @@ const SETTINGS_SCRIPT = `
   };
 `;
 
-export function wizardHtml(token: string) {
-  return shell("Dauys — настройка", WIZARD_MARKUP, WIZARD_SCRIPT, token);
+export function wizardHtml() {
+  return shell("Dauys: настройка", WIZARD_MARKUP, WIZARD_SCRIPT);
 }
 
-export function settingsHtml(token: string) {
-  return shell("Dauys — настройки", SETTINGS_MARKUP, SETTINGS_SCRIPT, token);
+export function settingsHtml() {
+  return shell("Dauys: настройки", SETTINGS_MARKUP, SETTINGS_SCRIPT);
 }
 
 /** Test helper: ensure helpers appear before page logic and panel markup exists. */
 export function assertWizardHtmlOrder(html: string) {
-  const tokenIdx = html.indexOf("var TOKEN");
+  const helperIdx = html.indexOf("async function api");
   const panelIdx = html.indexOf('id="panel"');
   const renderIdx = html.indexOf("render();");
   if (panelIdx < 0) throw new Error("wizard missing #panel");
-  if (tokenIdx < 0) throw new Error("wizard missing TOKEN helper");
+  if (helperIdx < 0) throw new Error("wizard missing api helper");
   if (renderIdx < 0) throw new Error("wizard missing render()");
-  if (!(tokenIdx < renderIdx))
-    throw new Error("TOKEN must be defined before render()");
+  if (!(helperIdx < renderIdx))
+    throw new Error("api helper must be defined before render()");
 }

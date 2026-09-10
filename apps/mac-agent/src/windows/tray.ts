@@ -22,16 +22,17 @@ export function startTray(o: {
     "Bypass",
     "-File",
     script,
-    "-BaseUrl",
-    o.baseUrl,
-    "-Token",
-    o.token,
   ];
   if (o.iconPath) args.push("-IconPath", o.iconPath);
   const child = spawn("powershell.exe", args, {
     windowsHide: true,
     stdio: "ignore",
     detached: false,
+    env: {
+      ...process.env,
+      DAUYS_CONTROL_BASE_URL: o.baseUrl,
+      DAUYS_LOCAL_TOKEN: o.token,
+    },
   });
   let stopped = false;
   const stop = () => {

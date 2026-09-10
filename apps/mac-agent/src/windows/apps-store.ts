@@ -90,9 +90,12 @@ export function mergeDiscovered(
   current: LocalAppsFile,
   discovered: LocalApp[],
 ): LocalAppsFile {
-  const byId = new Map(current.apps.map((a) => [a.id, a]));
+  const currentById = new Map(current.apps.map((a) => [a.id, a]));
+  const byId = new Map<string, LocalApp>(
+    current.apps.filter((app) => app.kind === "system").map((app) => [app.id, app]),
+  );
   for (const d of discovered) {
-    const prev = byId.get(d.id);
+    const prev = currentById.get(d.id);
     if (prev) {
       // Keep user enabled flag and custom aliases if they edited
       byId.set(d.id, {

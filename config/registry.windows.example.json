@@ -17,26 +17,42 @@
     {
       "id": "cursor",
       "name": "Cursor",
-      "aliases": ["курсор", "редактор"],
-      "path": "C:/Users/USERNAME/AppData/Local/Programs/cursor/Cursor.exe"
+      "aliases": ["курсор", "редактор"]
     },
     {
       "id": "chrome",
       "name": "Google Chrome",
-      "aliases": ["хром", "chrome"],
-      "path": "C:/Program Files/Google/Chrome/Application/chrome.exe"
+      "aliases": ["хром", "гугл хром", "chrome"]
+    },
+    {
+      "id": "edge",
+      "name": "Microsoft Edge",
+      "aliases": ["эдж", "edge"]
     },
     {
       "id": "telegram",
       "name": "Telegram",
-      "aliases": ["телега", "тг"],
-      "path": "C:/Users/USERNAME/AppData/Roaming/Telegram Desktop/Telegram.exe"
+      "aliases": ["телега", "телеграм", "тг"]
+    },
+    {
+      "id": "whatsapp",
+      "name": "WhatsApp",
+      "aliases": ["ватсап", "вацап", "whatsapp"]
+    },
+    {
+      "id": "vscode",
+      "name": "Visual Studio Code",
+      "aliases": ["код", "вс код", "vs code"]
     },
     {
       "id": "explorer",
-      "name": "Explorer",
-      "aliases": ["проводник", "explorer"],
-      "path": "C:/Windows/explorer.exe"
+      "name": "Проводник",
+      "aliases": ["проводник", "файлы", "explorer"]
+    },
+    {
+      "id": "settings",
+      "name": "Параметры",
+      "aliases": ["настройки", "параметры", "settings"]
     }
   ]
 }

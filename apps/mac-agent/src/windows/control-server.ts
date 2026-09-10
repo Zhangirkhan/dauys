@@ -121,24 +121,27 @@ export async function startControlServer(hooks: ControlHooks): Promise<ControlSe
   const server = http.createServer(async (req, res) => {
     try {
       const host = "127.0.0.1";
+      if ((req.headers.host ?? "").split(":")[0] !== host) {
+        res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Forbidden");
+        return;
+      }
       const url = new URL(req.url ?? "/", `http://${host}`);
       const path = url.pathname;
       const method = req.method ?? "GET";
 
       if (method === "GET" && path === "/") {
-        const pageToken = url.searchParams.get("t") ?? "";
-        if (pageToken !== token) {
-          res.writeHead(401, { "Content-Type": "text/plain; charset=utf-8" });
-          res.end("Unauthorized");
-          return;
-        }
         const settings =
           url.searchParams.has("settings") ||
           url.searchParams.get("view") === "settings";
-        const html = settings ? settingsHtml(token) : wizardHtml(token);
+        const html = settings ? settingsHtml() : wizardHtml();
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",
+          "Referrer-Policy": "no-referrer",
+          "X-Frame-Options": "DENY",
+          "Cross-Origin-Resource-Policy": "same-origin",
+          "Set-Cookie": `dauys_local=${token}; HttpOnly; SameSite=Strict; Path=/`,
         });
         res.end(html);
         return;
@@ -151,7 +154,13 @@ export async function startControlServer(hooks: ControlHooks): Promise<ControlSe
       }
 
       const auth = req.headers["x-dauys-local"];
-      if (auth !== token) {
+      const cookie = req.headers.cookie ?? "";
+      const cookieAuth = cookie
+        .split(";")
+        .map((part) => part.trim())
+        .find((part) => part.startsWith("dauys_local="))
+        ?.slice("dauys_local=".length);
+      if (auth !== token && cookieAuth !== token) {
         json(res, 401, {
           ok: false,
           error: { code: "UNAUTHORIZED", message: "Нужен локальный токен" },
@@ -359,8 +368,8 @@ export async function startControlServer(hooks: ControlHooks): Promise<ControlSe
     port,
     token,
     baseUrl,
-    wizardUrl: `${baseUrl}/?t=${encodeURIComponent(token)}`,
-    settingsUrl: `${baseUrl}/?t=${encodeURIComponent(token)}&settings=1`,
+    wizardUrl: `${baseUrl}/`,
+    settingsUrl: `${baseUrl}/?settings=1`,
     close: () =>
       new Promise((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
@@ -370,8 +379,8 @@ export async function startControlServer(hooks: ControlHooks): Promise<ControlSe
 
 export function openLocalUrl(url: string) {
   execFileCb(
-    "cmd.exe",
-    ["/c", "start", "", url],
+    "explorer.exe",
+    [url],
     { windowsHide: true },
     () => undefined,
   );

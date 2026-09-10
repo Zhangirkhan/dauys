@@ -135,7 +135,7 @@ for (const item of INCLUDE) {
 writeFileSync(
   join(stage, "README.TRANSFER.txt"),
   [
-    "Dauys — архив исходников для Windows 11 x64 (feature/windows-easy-install)",
+    "Dauys - архив исходников для Windows 11 x64 (ветка Windows)",
     "",
     "1. Установите Node.js 24+ x64 и pnpm 11.",
     "2. Установите Inno Setup 6: https://jrsoftware.org/isdl.php",

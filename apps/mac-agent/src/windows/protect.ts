@@ -168,6 +168,28 @@ $dialog.ShowNewFolderButton = $true
 if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { exit 1 }
 Write-Output $dialog.SelectedPath
 `,
+    "known-folder.ps1": `param(
+  [Parameter(Mandatory = $true)]
+  [ValidateSet('downloads','documents','desktop','pictures','music','videos')]
+  [string]$Id
+)
+$ErrorActionPreference = 'Stop'
+$path = switch ($Id) {
+  'documents' { [Environment]::GetFolderPath('MyDocuments') }
+  'desktop' { [Environment]::GetFolderPath('Desktop') }
+  'pictures' { [Environment]::GetFolderPath('MyPictures') }
+  'music' { [Environment]::GetFolderPath('MyMusic') }
+  'videos' { [Environment]::GetFolderPath('MyVideos') }
+  'downloads' {
+    $key = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders'
+    $value = (Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue).'{374DE290-123F-4565-9164-39C4925E467B}'
+    if ($value) { [Environment]::ExpandEnvironmentVariables([string]$value) }
+    else { Join-Path $env:USERPROFILE 'Downloads' }
+  }
+}
+if ([string]::IsNullOrWhiteSpace($path)) { throw 'Системная папка не найдена' }
+Write-Output ([System.IO.Path]::GetFullPath($path))
+`,
     "discover-apps.ps1": `$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 $shell = New-Object -ComObject WScript.Shell
@@ -185,6 +207,18 @@ function Add-Lnk([string]$lnkPath) {
     $name = [System.IO.Path]::GetFileNameWithoutExtension($lnkPath)
     if ([string]::IsNullOrWhiteSpace($name) -or $name.Length -gt 80) { return }
     $results.Add([pscustomobject]@{ name = $name; path = $target; args = $args })
+  } catch {}
+}
+function Add-Exe([string]$name, [string]$target) {
+  try {
+    if ([string]::IsNullOrWhiteSpace($name) -or $name.Length -gt 80) { return }
+    $target = $target.Trim().Trim('"')
+    if ($target -match '^"([^"]+\\.exe)"(?:,-?\\d+)?$') { $target = $Matches[1] }
+    elseif ($target -match '^(.+\\.exe)(?:,-?\\d+)?$') { $target = $Matches[1] }
+    if ($target.StartsWith('\\\\') -or $target.StartsWith('//')) { return }
+    if ($target -notmatch '\\.exe$') { return }
+    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { return }
+    $results.Add([pscustomobject]@{ name = $name; path = $target; args = '' })
   } catch {}
 }
 $dirs = @(
@@ -206,22 +240,40 @@ foreach ($root in @(
   if (-not (Test-Path -LiteralPath $root)) { continue }
   Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | ForEach-Object {
     try {
-      $p = (Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction Stop).'(default)'
-      if ($p -and ($p -match '\\.exe$') -and (Test-Path -LiteralPath $p)) {
-        $name = [System.IO.Path]::GetFileNameWithoutExtension($_.PSChildName)
-        $results.Add([pscustomobject]@{ name = $name; path = $p; args = '' })
+      $p = $_.GetValue('')
+      $name = [System.IO.Path]::GetFileNameWithoutExtension($_.PSChildName)
+      if ($p) { Add-Exe $name ([string]$p) }
+    } catch {}
+  }
+}
+# Installed-program records. Only an existing local .exe from DisplayIcon is used;
+# uninstall commands and arguments are never imported.
+foreach ($root in @(
+  'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
+)) {
+  if (-not (Test-Path -LiteralPath $root)) { continue }
+  Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | ForEach-Object {
+    try {
+      $p = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction Stop
+      if ($p.DisplayName -and $p.DisplayIcon) {
+        Add-Exe ([string]$p.DisplayName) ([string]$p.DisplayIcon)
       }
     } catch {}
   }
 }
 $results | ConvertTo-Json -Compress -Depth 3
 `,
-    "tray-host.ps1": `param(
-  [Parameter(Mandatory = $true)][string]$BaseUrl,
-  [Parameter(Mandatory = $true)][string]$Token,
-  [string]$IconPath = ''
-)
+    "tray-host.ps1": `param([string]$IconPath = '')
 $ErrorActionPreference = 'Stop'
+$BaseUrl = [string]$env:DAUYS_CONTROL_BASE_URL
+$Token = [string]$env:DAUYS_LOCAL_TOKEN
+$env:DAUYS_CONTROL_BASE_URL = ''
+$env:DAUYS_LOCAL_TOKEN = ''
+if ([string]::IsNullOrWhiteSpace($BaseUrl) -or [string]::IsNullOrWhiteSpace($Token)) {
+  throw 'Не заданы параметры локального control-server'
+}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -285,8 +337,9 @@ $notify.ContextMenuStrip = $menu
 $miStatus.add_Click({
   try {
     $j = Invoke-Agent 'GET' '/api/status' | ConvertFrom-Json
+    $s = $j.data
     [System.Windows.Forms.MessageBox]::Show(
-      ("Статус: {0}\`nСервер: {1}\`nПривязка: {2}\`nВерсия: {3}" -f $j.connection, $j.server, $j.paired, $j.version),
+      ("Статус: {0}\`nСервер: {1}\`nПривязка: {2}\`nВерсия: {3}" -f $s.connection, $s.server, $s.paired, $s.version),
       'Dauys'
     ) | Out-Null
   } catch {
@@ -300,7 +353,7 @@ $miAutostart.add_Click({
   try {
     $j = Invoke-Agent 'POST' '/api/toggle-autostart' | ConvertFrom-Json
     [System.Windows.Forms.MessageBox]::Show(
-      $(if ($j.autostart) { 'Автозапуск включён' } else { 'Автозапуск выключен' }),
+      $(if ($j.data.autostart) { 'Автозапуск включён' } else { 'Автозапуск выключен' }),
       'Dauys'
     ) | Out-Null
   } catch {}
@@ -314,12 +367,19 @@ $miExit.add_Click({
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 3000
+$script:failures = 0
 $timer.add_Tick({
   try {
     $j = Invoke-Agent 'GET' '/api/status' | ConvertFrom-Json
-    Set-StatusIcon ([string]$j.connection)
+    $script:failures = 0
+    Set-StatusIcon ([string]$j.data.connection)
   } catch {
+    $script:failures++
     Set-StatusIcon 'error'
+    if ($script:failures -ge 5) {
+      $notify.Visible = $false
+      [System.Windows.Forms.Application]::Exit()
+    }
   }
 })
 $timer.Start()

@@ -876,19 +876,7 @@ export async function createApp(o: AppOptions) {
           }
           // Windows agent pushes name/aliases only — registry.path from clients is ignored (local exe map stays on PC).
           if (rawMessage.type === "apps_catalog") {
-            const apps = Array.isArray(rawMessage.applications)
-              ? rawMessage.applications.map(
-                  (a: { id?: unknown; name?: unknown; aliases?: unknown }) => ({
-                    id: a.id,
-                    name: a.name,
-                    aliases: a.aliases,
-                  }),
-                )
-              : [];
-            const catalog = appsCatalogSchema.parse({
-              type: "apps_catalog",
-              applications: apps,
-            });
+            const catalog = appsCatalogSchema.parse(rawMessage);
             o.registry.mergeAppsCatalog(catalog.applications);
             return;
           }

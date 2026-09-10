@@ -103,7 +103,8 @@ async function pairWithServer(o: {
   const raw = await response.json();
   if (!response.ok)
     throw new Error(
-      "Не удалось создать код привязки: " + JSON.stringify(raw),
+      "Не удалось создать код привязки. Сервер ответил HTTP " +
+        response.status,
     );
   return z
     .object({
@@ -163,7 +164,7 @@ async function runWindowsStandalone(o: {
   let connection: ConnectionState = "offline";
   let pairedFlag = false;
   let agent: AgentClient | undefined;
-  let tray: TrayHandle | undefined;
+  const tray: { current?: TrayHandle } = {};
   let control: ControlServer | undefined;
   let localApps = await loadLocalApps(o.dataDir);
   const recentOps: RecentOp[] = [];
@@ -252,9 +253,6 @@ async function runWindowsStandalone(o: {
       },
       onConnectionChange: (s) => {
         connection = s;
-        if (s === "connected") {
-          agent?.sendAppsCatalog(catalogForServer(localApps.apps));
-        }
       },
       onAuthFailure: () => {
         logger.error(
@@ -263,6 +261,7 @@ async function runWindowsStandalone(o: {
         process.exit(0);
       },
     });
+    agent.sendAppsCatalog(catalogForServer(localApps.apps));
     agent.connect();
   };
 
@@ -274,13 +273,15 @@ async function runWindowsStandalone(o: {
       /* ok */
     }
     execFile(
-      "cmd.exe",
-      ["/c", "start", "", "notepad.exe", logPath],
+      "notepad.exe",
+      [logPath],
       { windowsHide: true },
       () => undefined,
     );
   };
 
+  // Assigned after hooks are created so early quit/settings calls remain safe.
+  // eslint-disable-next-line prefer-const
   control = await startControlServer({
     getState: () => ({
       connection,
@@ -516,7 +517,7 @@ async function runWindowsStandalone(o: {
       if (control) openLocalUrl(control.settingsUrl);
     },
     quit: async () => {
-      tray?.stop();
+      tray.current?.stop();
       agent?.close();
       ledger.close();
       await control?.close().catch(() => undefined);
@@ -549,13 +550,13 @@ async function runWindowsStandalone(o: {
     await ensureStartMenuShortcut().catch(() => undefined);
   }
 
-  tray = startTray({
+  tray.current = startTray({
     helpersDir: o.helpersDir,
     baseUrl: control.baseUrl,
     token: control.token,
   });
 
-  let token = await readToken();
+  const token = await readToken();
   if (!token) throw new Error("Нет токена агента после настройки");
 
   // Apply SERVER_PUBLIC_URL override from env if set
@@ -607,7 +608,7 @@ async function runWindowsStandalone(o: {
 
   for (const s of ["SIGINT", "SIGTERM"] as const)
     process.on(s, () => {
-      tray?.stop();
+      tray.current?.stop();
       agent?.close();
       ledger.close();
       void control?.close();

@@ -8,31 +8,41 @@ const normalizeName = (s: string) =>
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
 
-export function knownFolderPathWindows(query: string): string | undefined {
+export type KnownFolderId =
+  | "downloads"
+  | "documents"
+  | "desktop"
+  | "pictures"
+  | "music"
+  | "videos";
+
+export function knownFolderIdWindows(query: string): KnownFolderId | undefined {
   const n = normalizeName(query);
   if (!n) return undefined;
-  const home = homedir();
-  const folders: Array<[string[], string]> = [
-    [
-      ["downloads", "download", "загрузки", "загрузка", "загрузок"],
-      join(home, "Downloads"),
-    ],
-    [
-      ["documents", "document", "документы", "документов"],
-      join(home, "Documents"),
-    ],
-    [
-      ["desktop", "рабочий стол", "рабочего стола"],
-      join(home, "Desktop"),
-    ],
-    [
-      ["pictures", "изображения", "фотографии"],
-      join(home, "Pictures"),
-    ],
-    [["music", "музыка"], join(home, "Music")],
-    [["videos", "видео", "фильмы"], join(home, "Videos")],
+  const names: Array<[KnownFolderId, string[]]> = [
+    ["downloads", ["downloads", "download", "загрузки", "загрузка", "загрузок"]],
+    ["documents", ["documents", "document", "документы", "документов"]],
+    ["desktop", ["desktop", "рабочий стол", "рабочего стола"]],
+    ["pictures", ["pictures", "изображения", "фотографии"]],
+    ["music", ["music", "музыка"]],
+    ["videos", ["videos", "видео", "фильмы"]],
   ];
-  for (const [names, path] of folders)
-    if (names.some((name) => n === name || n.startsWith(name))) return path;
-  return undefined;
+  return names.find(([, aliases]) =>
+    aliases.some((name) => n === name || n.startsWith(name)),
+  )?.[0];
+}
+
+export function knownFolderPathWindows(query: string): string | undefined {
+  const id = knownFolderIdWindows(query);
+  if (!id) return undefined;
+  const home = homedir();
+  const folderNames: Record<KnownFolderId, string> = {
+    downloads: "Downloads",
+    documents: "Documents",
+    desktop: "Desktop",
+    pictures: "Pictures",
+    music: "Music",
+    videos: "Videos",
+  };
+  return join(home, folderNames[id]);
 }

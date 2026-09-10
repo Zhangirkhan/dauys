@@ -121,7 +121,7 @@ export class LocalIntentResolver implements IntentResolver {
     if (/батар|заряд/.test(q))
       return execute(
         { action: "get_battery_status", parameters: {} },
-        "Проверяю заряд Mac",
+        "Проверяю заряд батареи",
       );
     if (/что (?:сейчас )?открыто|активн.*прилож/.test(q))
       return execute(

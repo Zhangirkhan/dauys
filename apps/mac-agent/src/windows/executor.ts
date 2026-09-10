@@ -39,7 +39,10 @@ import {
   helperPath,
   runFixedPs1,
 } from "./protect.js";
-import { knownFolderPathWindows } from "./folders.js";
+import {
+  knownFolderIdWindows,
+  knownFolderPathWindows,
+} from "./folders.js";
 import {
   findLocalApp,
   loadLocalApps,
@@ -93,6 +96,19 @@ export class WinExecutor {
       windowsHide: true,
     });
     return stdout.trim();
+  }
+  private async launch(file: string, args: string[]) {
+    const child = spawn(file, args, {
+      stdio: "ignore",
+      detached: true,
+      shell: false,
+      windowsHide: true,
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+    child.unref();
   }
   private async openTarget(target: string, args = "") {
     const dir = await this.helpers();
@@ -192,17 +208,17 @@ export class WinExecutor {
           ...(options.newWindow ? ["-n"] : []),
           ...(options.folder ? [options.folder] : []),
         ];
-        await this.run(exe, exeArgs.length ? exeArgs : ["-n"]);
+        await this.launch(exe, exeArgs.length ? exeArgs : ["-n"]);
         return;
       }
-      await this.run(cli, args.length ? args : ["-n"]);
+      await this.launch(cli, args.length ? args : ["-n"]);
       return;
     }
     if (options.folder) {
-      await this.run(appPath, [options.folder]);
+      await this.launch(appPath, [options.folder]);
       return;
     }
-    await this.openTarget(appPath);
+    await this.launch(appPath, []);
   }
   async execute(
     command: Action,
@@ -390,7 +406,7 @@ export class WinExecutor {
             c.action === "open_file" ? "file" : "folder",
           );
           if (c.action === "open_folder")
-            await this.run("explorer.exe", [path]);
+            await this.launch("explorer.exe", [path]);
           else await this.openTarget(path);
           return {
             success: true,
@@ -408,9 +424,9 @@ export class WinExecutor {
               c.parameters.applicationId,
               registry,
             );
-            await this.run(app.path, [c.parameters.url]);
+            await this.launch(app.path, [c.parameters.url]);
           } else {
-            await this.openTarget(c.parameters.url);
+            await this.launch("explorer.exe", [c.parameters.url]);
           }
           return { success: true, message: "Открыт " + c.parameters.url };
         }
@@ -425,7 +441,7 @@ export class WinExecutor {
             );
           // Не гарантируем «новую вкладку» во всех состояниях браузера —
           // передаём явный флаг браузеру.
-          await this.run(app.path, ["--new-tab", "about:blank"]);
+          await this.launch(app.path, ["--new-tab", "about:blank"]);
           return {
             success: true,
             message:
@@ -604,7 +620,7 @@ export class WinExecutor {
       project.uri,
       allowedSshHosts(config, process.env.ALLOWED_SSH_HOSTS ?? ""),
     );
-    await this.run(app.path, [
+    await this.launch(app.path, [
       ...(newWindow ? ["-n"] : []),
       "--folder-uri",
       project.uri,
@@ -671,7 +687,7 @@ export class WinExecutor {
           data: { path: guarded },
         };
       }
-      if (kind === "folder") await this.run("explorer.exe", [guarded]);
+      if (kind === "folder") await this.launch("explorer.exe", [guarded]);
       else await this.openTarget(guarded);
       return {
         success: true,
@@ -680,10 +696,16 @@ export class WinExecutor {
       };
     };
     if (p.kind !== "file") {
-      const known = knownFolderPathWindows(needle);
-      if (known) {
+      const knownId = knownFolderIdWindows(needle);
+      if (knownId) {
         try {
-          return await reveal(known, "folder");
+          const helpers = await this.helpers();
+          const known =
+            (await runFixedPs1(helperPath(helpers, "known-folder.ps1"), [
+              "-Id",
+              knownId,
+            ])) || knownFolderPathWindows(needle);
+          if (known) return await reveal(known, "folder");
         } catch {
           /* fall through */
         }

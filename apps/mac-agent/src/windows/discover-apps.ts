@@ -103,7 +103,7 @@ const KNOWN: KnownSpec[] = [
   {
     id: "vscode",
     name: "Visual Studio Code",
-    aliases: ["vs code", "vscode", "код", "visual studio code"],
+    aliases: ["vs code", "vscode", "вс код", "код", "visual studio code"],
     candidates: [
       "%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe",
       "%ProgramFiles%\\Microsoft VS Code\\Code.exe",
@@ -258,14 +258,16 @@ export async function discoverInstalledApps(
           (a) => a.toLocaleLowerCase() === app.name.toLocaleLowerCase(),
         ),
     );
-    if (known && !knownIds.has(known.id) && app.kind === "exe") {
-      found.push({
-        ...app,
-        id: known.id,
-        name: known.name,
-        aliases: known.aliases,
-      });
-      knownIds.add(known.id);
+    if (known && app.kind === "exe") {
+      if (!knownIds.has(known.id)) {
+        found.push({
+          ...app,
+          id: known.id,
+          name: known.name,
+          aliases: known.aliases,
+        });
+        knownIds.add(known.id);
+      }
       continue;
     }
     if (app.kind === "exe") {
