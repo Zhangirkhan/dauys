@@ -13,13 +13,11 @@ import { tmpdir } from "node:os";
 import { z, ZodError } from "zod";
 import {
   actionSchema,
-  agentHelloSchema,
   decisionSchema,
   registrySchema,
   resultSchema,
   requiresConfirmation,
   type Action,
-  type AgentHello,
   type CommandRecord,
   type ExecutionResult,
 } from "../../../packages/shared/src/index.js";
@@ -80,7 +78,10 @@ export async function createApp(o: AppOptions) {
       .finally(() => jobs.delete(job));
     jobs.add(job);
   };
-  const capabilities = new Map<string, AgentHello>();
+  const capabilities = new Map<
+    string,
+    { shortcuts: Array<{ id: string; name: string }>; realActions: boolean }
+  >();
   const agents = new Map<string, WebSocket>();
   const clients = new Map<WebSocket, Device>();
   const waiting = new Map<string, string>();
@@ -97,8 +98,6 @@ export async function createApp(o: AppOptions) {
         d.role === "agent"
           ? agents.get(d.id)?.readyState === WebSocket.OPEN
           : [...clients.values()].some((c) => c.id === d.id),
-      platform:
-        d.role === "agent" ? (capabilities.get(d.id)?.platform ?? null) : null,
     }));
   const notifyDevices = (id: string) =>
     broadcast(id, { type: "devices", devices: deviceList(id) });
@@ -107,36 +106,10 @@ export async function createApp(o: AppOptions) {
     o.store.save(c);
     broadcast(c.agentId, { type: "command", command: c });
   };
-  const stage = (
-    c: CommandRecord,
-    name: string,
-    extra: Record<string, unknown> = {},
-  ) => {
-    app.log.info(
-      {
-        commandId: c.id,
-        agentId: c.agentId,
-        status: c.status,
-        stage: name,
-        action: c.command?.action,
-        ...extra,
-      },
-      "command stage",
-    );
-  };
   const fail = (c: CommandRecord, message: string) => {
     if (closing || terminal(c) || terminal(o.store.command(c.id) ?? c)) return;
     c.status = "error";
     c.result = { success: false, message };
-    app.log.warn(
-      {
-        commandId: c.id,
-        agentId: c.agentId,
-        action: c.command?.action,
-        message: message.slice(0, 200),
-      },
-      "command failed",
-    );
     save(c);
   };
   const authenticate = (req: FastifyRequest): Device => {
@@ -148,7 +121,7 @@ export async function createApp(o: AppOptions) {
       throw new ApiError(
         401,
         "UNAUTHORIZED",
-        "Привяжите устройство с помощью кода агента на компьютере.",
+        "Привяжите устройство с помощью кода Mac-агента.",
       );
     return d;
   };
@@ -222,6 +195,14 @@ export async function createApp(o: AppOptions) {
     switch (command.action) {
       case "open_application":
       case "close_application":
+        if (
+          command.parameters.applicationId &&
+          !registry.applications.some(
+            (a) => a.id === command.parameters.applicationId,
+          )
+        )
+          throw new Error("Приложение отсутствует в реестре");
+        break;
       case "new_browser_tab":
         if (
           !registry.applications.some(
@@ -265,39 +246,18 @@ export async function createApp(o: AppOptions) {
       !c.confirmed
     ) {
       c.status = "confirmation";
-      stage(c, "confirmation", { action: c.command.action });
       save(c);
       return;
     }
     const ws = agents.get(c.agentId);
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      fail(
-        c,
-        "Компьютер не подключён. Запустите агент Рядом на Mac или Windows.",
-      );
-      return;
-    }
-    const caps = capabilities.get(c.agentId);
-    if (
-      caps?.supportedActions &&
-      c.command &&
-      !caps.supportedActions.includes(c.command.action)
-    ) {
-      fail(
-        c,
-        "Действие «" +
-          c.command.action +
-          "» не поддерживается подключённым агентом (" +
-          (caps.platform ?? "unknown") +
-          ").",
-      );
+      fail(c, "MacBook не подключён. Запустите агент Рядом на Mac.");
       return;
     }
     c.status = "executing";
     save(c);
     const executionId = randomUUID();
     waiting.set(executionId, c.id);
-    stage(c, "dispatch", { executionId });
     ws.send(
       JSON.stringify({
         type: "command",
@@ -357,11 +317,6 @@ export async function createApp(o: AppOptions) {
       if (!current || terminal(current)) return;
       active(c);
       c.decision = decision;
-      stage(c, "intent", {
-        decisionType: decision.type,
-        action: decision.type === "execute" ? decision.action : undefined,
-        textLen: (answer ?? c.text).length,
-      });
       if (decision.type === "reject") {
         fail(c, decision.reason);
         return;
@@ -370,7 +325,6 @@ export async function createApp(o: AppOptions) {
         c.status = "clarification";
         c.question = decision.question;
         c.options = decision.options;
-        stage(c, "clarification");
         save(c);
         return;
       }
@@ -378,22 +332,8 @@ export async function createApp(o: AppOptions) {
         action: decision.action,
         parameters: decision.parameters,
       });
-      if (
-        (requiresConfirmation(c.command) || decision.confirmationRequired) &&
-        !c.confirmed
-      ) {
-        stage(c, "confirmation-pending", { action: c.command.action });
-      }
       dispatch(c);
     } catch (error) {
-      app.log.error(
-        {
-          commandId: c.id,
-          message:
-            error instanceof Error ? error.message.slice(0, 200) : "unknown",
-        },
-        "intent background error",
-      );
       fail(c, error instanceof Error ? error.message : "Ошибка обработки");
     }
   };
@@ -435,16 +375,27 @@ export async function createApp(o: AppOptions) {
       return;
     }
     c.result = result;
-    if (result.success && c.command?.action === "search_files") {
+    if (
+      result.success &&
+      (c.command?.action === "search_files" ||
+        c.command?.action === "search_drive")
+    ) {
       const ctx = o.store.context(c.agentId);
       ctx.searchResults = result.files ?? [];
-      if (result.files?.length === 1) ctx.lastFile = result.files[0].path;
+      if (
+        result.files?.length === 1 &&
+        result.files[0].kind !== "drive" &&
+        result.files[0].path.startsWith("/")
+      )
+        ctx.lastFile = result.files[0].path;
       o.store.saveContext(c.agentId, ctx);
     }
     if (
       result.success &&
       (c.command?.action === "open_named_item" ||
-        c.command?.action === "open_editor_project") &&
+        c.command?.action === "open_editor_project" ||
+        c.command?.action === "open_application" ||
+        c.command?.action === "close_application") &&
       result.files &&
       result.files.length > 1
     ) {
@@ -457,6 +408,43 @@ export async function createApp(o: AppOptions) {
       }));
       save(c);
       return;
+    }
+    if (
+      result.success &&
+      c.command?.action === "search_drive" &&
+      result.files?.length
+    ) {
+      c.files = result.files;
+      if (
+        result.files.length === 1 &&
+        result.files[0].url &&
+        result.files[0].kind !== "folder" &&
+        result.files[0].kind !== "file"
+      ) {
+        c.command = {
+          action: "open_url",
+          parameters: {
+            url: result.files[0].url,
+            applicationId: o.registry
+              .get()
+              .applications.some((a) => a.id === "chrome")
+              ? "chrome"
+              : undefined,
+          },
+        };
+        dispatch(c);
+        return;
+      }
+      if (result.files.length > 1) {
+        c.status = "clarification";
+        c.question = "Какой файл с диска открыть? Назовите номер.";
+        c.options = result.files.map((f) => ({
+          id: f.id,
+          label: f.name + (f.path && f.path !== "/" ? " · " + f.path : ""),
+        }));
+        save(c);
+        return;
+      }
     }
     if (
       result.success &&
@@ -527,13 +515,13 @@ export async function createApp(o: AppOptions) {
     { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
     async (req) => {
       const body = z
-        .object({ name: z.string().min(1).max(80).default("Компьютер") })
+        .object({ name: z.string().min(1).max(80).default("MacBook") })
         .strict()
         .parse(req.body ?? {});
       const bearer = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
       let d = o.store.authenticate(bearer);
       if (d?.role === "client")
-        throw new ApiError(403, "AGENT_REQUIRED", "Код создаёт агент на компьютере.");
+        throw new ApiError(403, "AGENT_REQUIRED", "Код создаёт Mac-агент.");
       if (!d) {
         const a = Buffer.from(bearer),
           b = Buffer.from(o.bootstrapSecret);
@@ -541,7 +529,7 @@ export async function createApp(o: AppOptions) {
           throw new ApiError(
             401,
             "UNAUTHORIZED",
-            "Требуется bootstrap-секрет агента",
+            "Требуется bootstrap-секрет Mac-агента",
           );
         d = o.store.createDevice(body.name, "agent");
         const token = (d as Device & { token: string }).token;
@@ -616,15 +604,47 @@ export async function createApp(o: AppOptions) {
         save(c);
         return;
       }
+      const driveId = Number(f.id);
       c.command =
-        f.kind === "project"
+        c.command?.action === "close_application" && f.kind === "app"
           ? {
-              action: "open_editor_project",
-              parameters: { query: f.name, projectKey: f.id },
+              action: "close_application",
+              parameters: { query: f.name },
             }
-          : f.kind === "folder"
-            ? { action: "open_folder", parameters: { path: f.path } }
-            : { action: "open_file", parameters: { path: f.path } };
+          : f.kind === "app"
+            ? {
+                action: "open_application",
+                parameters: { query: f.name },
+              }
+            : f.kind === "drive" && Number.isInteger(driveId) && driveId > 0
+              ? {
+                  action: "search_drive",
+                  parameters: {
+                    query: f.name,
+                    open: true,
+                    fileId: driveId,
+                  },
+                }
+              : f.kind === "drive" && f.url
+                ? {
+                    action: "open_url",
+                    parameters: {
+                      url: f.url,
+                      applicationId: o.registry
+                        .get()
+                        .applications.some((a) => a.id === "chrome")
+                        ? "chrome"
+                        : undefined,
+                    },
+                  }
+                : f.kind === "project"
+                  ? {
+                      action: "open_editor_project",
+                      parameters: { query: f.name, projectKey: f.id },
+                    }
+                  : f.kind === "folder"
+                    ? { action: "open_folder", parameters: { path: f.path } }
+                    : { action: "open_file", parameters: { path: f.path } };
       c.confirmed = false;
       dispatch(c);
       return;
@@ -668,47 +688,30 @@ export async function createApp(o: AppOptions) {
     background(async () => {
       const started = Date.now();
       try {
-        stage(c, "stt-start");
         const t = await o.stt.transcribe(join(dir, "input"));
         const sttMs = Date.now() - started;
         if (closing) return;
         const current = o.store.command(c.id);
         if (!current || terminal(current)) return;
         active(c);
-        const text = (t.text ?? "").trim();
-        stage(c, "stt-done", { sttMs, textLen: text.length });
-        if (!pending && !text) {
-          fail(c, "Не удалось распознать речь. Повторите.");
-          return;
-        }
         const intentStarted = Date.now();
         if (pending) {
           c.status = "clarification";
-          await clarify(c, text);
+          await clarify(c, t.text);
         } else {
-          c.text = text;
+          c.text = t.text;
           await resolveIntent(c);
         }
         app.log.info(
           {
-            commandId: c.id,
             sttMs,
             intentMs: Date.now() - intentStarted,
             totalMs: Date.now() - started,
-            textLen: text.length,
-            status: (o.store.command(c.id) ?? c).status,
-            action: (o.store.command(c.id) ?? c).command?.action,
+            text: t.text.slice(0, 80),
           },
           "voice pipeline",
         );
       } catch (e) {
-        app.log.error(
-          {
-            commandId: c.id,
-            message: (e as Error).message?.slice(0, 200),
-          },
-          "voice pipeline failed",
-        );
         fail(c, (e as Error).message);
       } finally {
         await rm(dir, { recursive: true, force: true });
@@ -749,7 +752,7 @@ export async function createApp(o: AppOptions) {
       throw new ApiError(
         409,
         "ALREADY_SENT",
-        "Команда уже отправлена на компьютер; отменить системное действие нельзя.",
+        "Команда уже отправлена на Mac; отменить системное действие нельзя.",
       );
     c.status = "cancelled";
     c.result = { success: false, message: "Отменено" };
@@ -762,8 +765,6 @@ export async function createApp(o: AppOptions) {
       ...o.runtime,
       deviceId: d.id,
       realActions: capabilities.get(d.agentId)?.realActions ?? false,
-      platform: capabilities.get(d.agentId)?.platform ?? null,
-      supportedActions: capabilities.get(d.agentId)?.supportedActions ?? null,
     });
   });
   app.get("/api/history", async (req) =>
@@ -838,7 +839,7 @@ export async function createApp(o: AppOptions) {
       websocket: true,
       preValidation: async (req) => {
         if (authenticate(req).role !== "agent")
-          throw new ApiError(403, "AGENT_REQUIRED", "Требуется токен агента");
+          throw new ApiError(403, "AGENT_REQUIRED", "Требуется токен Mac");
       },
     },
     (ws, req) => {
@@ -852,9 +853,24 @@ export async function createApp(o: AppOptions) {
         try {
           const rawMessage = JSON.parse(raw.toString());
           if (rawMessage.type === "hello") {
-            const hello = agentHelloSchema.parse(rawMessage);
+            const hello = z
+              .object({
+                type: z.literal("hello"),
+                realActions: z.boolean(),
+                shortcuts: z
+                  .array(
+                    z
+                      .object({
+                        id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/),
+                        name: z.string().min(1).max(500),
+                      })
+                      .strict(),
+                  )
+                  .max(100),
+              })
+              .strict()
+              .parse(rawMessage);
             capabilities.set(d.id, hello);
-            notifyDevices(d.id);
             return;
           }
           const msg = z
@@ -870,11 +886,6 @@ export async function createApp(o: AppOptions) {
           const c = o.store.command(commandId);
           if (!c || c.agentId !== d.id || agents.get(d.id) !== ws) return;
           waiting.delete(msg.id);
-          stage(c, "result", {
-            executionId: msg.id,
-            success: msg.result.success,
-            message: (msg.result.message ?? "").slice(0, 120),
-          });
           finish(c, msg.result);
         } catch (e) {
           app.log.warn(
@@ -893,7 +904,7 @@ export async function createApp(o: AppOptions) {
             waiting.delete(eid);
             fail(
               c,
-              "Связь с компьютером потеряна. Команда не повторяется автоматически; проверьте результат на компьютере.",
+              "Связь с Mac потеряна. Команда не повторяется автоматически; проверьте результат на Mac.",
             );
           }
         }
@@ -926,6 +937,10 @@ export async function createApp(o: AppOptions) {
     await app.register(fastifyStatic, {
       root: resolve(o.staticDir),
       maxAge: 0,
+      setHeaders(res, filePath) {
+        if (/(?:index\.html|sw\.js|manifest\.webmanifest)$/.test(filePath))
+          res.setHeader("Cache-Control", "no-store");
+      },
     });
     app.setNotFoundHandler((req, reply) => {
       if (req.url.startsWith("/api/") || req.url.startsWith("/ws/"))

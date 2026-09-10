@@ -13,16 +13,21 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import {
   actionSchema,
-  actions,
+  driveSearchVariants,
+  isOfficeAppName,
+  officeAppQuery,
+  officeKindForExtension,
+  pickDriveHit,
   requiresConfirmation,
   type Action,
-  type AllowedAction,
+  type OfficeKind,
   type Registry,
   type ExecutionResult,
   type FileMatch,
   type Trust,
 } from "../../../packages/shared/src/index.js";
 import { guardPath, documentExtensions } from "./safety.js";
+import { emptyOfficeDocument } from "./office-files.js";
 import {
   buildNamedSpotlightQuery,
   pickNamedMatch,
@@ -35,6 +40,12 @@ import {
   guardRemoteUri,
   type CursorProject,
 } from "./cursor-projects.js";
+import {
+  DriveMcpClient,
+  driveOriginFromMcp,
+  type DriveHit,
+} from "./drive-mcp.js";
+import { InstalledAppIndex, type InstalledApp } from "./installed-apps.js";
 export { rankNamedMatches, pickNamedMatch } from "./spoken-name.js";
 const exec = promisify(execFile);
 
@@ -95,10 +106,14 @@ export type ExecutorOptions = {
   roots: string[];
   trust: Trust;
   dataDir: string;
+  driveUrl?: string;
+  driveToken?: string;
 };
 export class MacExecutor {
   private projects: CursorProjectIndex;
+  private apps: InstalledAppIndex;
   constructor(private o: ExecutorOptions) {
+    this.apps = new InstalledAppIndex();
     this.projects = new CursorProjectIndex({
       roots: o.roots.length ? o.roots : [homedir()],
       // `find` exits non-zero on unreadable subdirectories but still lists the rest.
@@ -116,15 +131,19 @@ export class MacExecutor {
         : undefined,
     });
   }
-  supportedActions(): AllowedAction[] {
-    return [...actions] as AllowedAction[];
-  }
   warmProjects() {
-    return this.projects.warm();
+    return Promise.all([this.projects.warm(), this.apps.warm()]).then(
+      () => undefined,
+    );
   }
-  private async run(file: string, args: string[]) {
+  private async run(
+    file: string,
+    args: string[],
+    extra: { timeout?: number; killSignal?: NodeJS.Signals } = {},
+  ) {
     const { stdout } = await exec(file, args, {
-      timeout: 12000,
+      timeout: extra.timeout ?? 12000,
+      killSignal: extra.killSignal ?? "SIGTERM",
       maxBuffer: 2 * 1024 * 1024,
       encoding: "utf8",
     });
@@ -133,6 +152,29 @@ export class MacExecutor {
   /** `open -a <name>` can resolve to another copy of the bundle, so prefer the registry path. */
   private async activate(applicationName: string, appPath?: string) {
     await this.run("/usr/bin/open", ["-a", appPath ?? applicationName]);
+  }
+  private async quitApp(applicationName: string, appPath?: string) {
+    const exe =
+      appPath && /\.app$/i.test(appPath)
+        ? basename(appPath, ".app")
+        : applicationName;
+    await this.run(
+      "/usr/bin/osascript",
+      [
+        "-e",
+        "on run argv\n try\n  tell application (item 1 of argv) to quit\n end try\nend run",
+        applicationName,
+      ],
+      { timeout: 1500, killSignal: "SIGKILL" },
+    ).catch(() => "");
+    await this.run("/usr/bin/killall", [exe], {
+      timeout: 2000,
+      killSignal: "SIGKILL",
+    }).catch(() => "");
+    await this.run("/usr/bin/killall", ["-KILL", exe], {
+      timeout: 2000,
+      killSignal: "SIGKILL",
+    }).catch(() => "");
   }
   private async findEditorCli(appPath: string | undefined, appName: string) {
     const bases = [
@@ -177,6 +219,105 @@ export class MacExecutor {
     }
     await this.activate(name, appPath);
   }
+  private officeKindOfApp(name: string): OfficeKind | undefined {
+    if (!isOfficeAppName(name)) return undefined;
+    return /excel/i.test(name) ? "excel" : "word";
+  }
+  private async openUserPath(path: string) {
+    try {
+      if ((await stat(path)).isDirectory()) {
+        await this.run("/usr/bin/open", [path]);
+        return;
+      }
+    } catch {
+      await this.run("/usr/bin/open", [path]);
+      return;
+    }
+    const kind = officeKindForExtension(extname(path).slice(1));
+    if (kind) {
+      const pick = await this.apps.resolve(officeAppQuery(kind));
+      if (pick.type === "open") {
+        await this.run("/usr/bin/open", ["-a", pick.app.path, path]);
+        return;
+      }
+    }
+    await this.run("/usr/bin/open", [path]);
+  }
+  private async createOfficeDocument(
+    app: { name: string; path?: string },
+    title?: string,
+  ): Promise<ExecutionResult> {
+    const kind = this.officeKindOfApp(app.name);
+    if (!kind) {
+      await this.activate(app.name, app.path);
+      return { success: true, message: "Открыто: " + app.name };
+    }
+    if (!title) {
+      try {
+        await this.run(
+          "/usr/bin/osascript",
+          [
+            "-e",
+            'on run argv\n tell application (item 1 of argv)\n  activate\n  if (item 2 of argv) is "excel" then\n   make new workbook\n  else\n   make new document\n  end if\n end tell\nend run',
+            app.name,
+            kind,
+          ],
+          { timeout: 25000 },
+        );
+        return {
+          success: true,
+          message:
+            kind === "excel"
+              ? "Создана новая таблица в Excel"
+              : "Создан новый документ Word",
+        };
+      } catch {
+        // Fall through to a blank file if Automation is not allowed yet.
+      }
+    }
+    const dir = join(this.o.dataDir, "office-new");
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    const base =
+      (title ?? (kind === "excel" ? "Новая таблица" : "Новый документ"))
+        .replace(/[^\p{L}\p{N} ._()-]/gu, "_")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 80) ||
+      (kind === "excel" ? "Новая таблица" : "Новый документ");
+    const file = join(dir, base + (kind === "excel" ? ".xlsx" : ".docx"));
+    await writeFile(file, emptyOfficeDocument(kind), { mode: 0o600 });
+    await this.run("/usr/bin/open", ["-a", app.path ?? app.name, file], {
+      timeout: 20000,
+    });
+    return {
+      success: true,
+      message: "Создано: " + basename(file),
+      files: [
+        {
+          id: file,
+          name: basename(file),
+          path: file,
+          modifiedAt: new Date().toISOString(),
+          kind: "file",
+        },
+      ],
+    };
+  }
+  private async closeOfficeDocument(appName: string) {
+    const kind = this.officeKindOfApp(appName);
+    if (!kind) return false;
+    await this.run(
+      "/usr/bin/osascript",
+      [
+        "-e",
+        'on run argv\n tell application (item 1 of argv)\n  activate\n  if (item 2 of argv) is "excel" then\n   if (count of workbooks) > 0 then close active workbook\n  else\n   if (count of documents) > 0 then close active document\n  end if\n end tell\nend run',
+        appName,
+        kind,
+      ],
+      { timeout: 8000 },
+    );
+    return true;
+  }
   async execute(
     command: Action,
     registry: Registry,
@@ -189,7 +330,7 @@ export class MacExecutor {
         throw new Error("Для действия требуется подтверждение");
       if (Date.now() >= expiresAt) throw new Error("Команда истекла");
       if (this.o.real && process.platform !== "darwin")
-        throw new Error("Реальные действия этого исполнителя только на macOS");
+        throw new Error("Реальные действия поддерживаются только на macOS");
       const application = (id: string) => {
         const app = registry.applications.find((a) => a.id === id);
         if (!app) throw new Error("Приложение не зарегистрировано");
@@ -202,12 +343,15 @@ export class MacExecutor {
         if (!p) throw new Error("Проект не зарегистрирован");
         return p;
       };
-      if (
-        c.action === "open_application" ||
-        c.action === "close_application" ||
-        c.action === "new_browser_tab"
-      )
+      if (c.action === "new_browser_tab")
         application(c.parameters.applicationId);
+      if (
+        (c.action === "open_application" || c.action === "close_application") &&
+        c.parameters.applicationId &&
+        !c.parameters.query &&
+        !registry.applications.some((a) => a.id === c.parameters.applicationId)
+      )
+        throw new Error("Приложение не зарегистрировано");
       if (c.action === "open_url" && c.parameters.applicationId)
         application(c.parameters.applicationId);
       if (c.action === "open_project") {
@@ -275,34 +419,60 @@ export class MacExecutor {
         throw new Error("Shortcut не разрешён в локальном agent-trust.json");
       if (!this.o.real) return this.mock(c, registry);
       switch (c.action) {
-        case "open_application":
-          if (c.parameters.applicationId === "finder")
+        case "open_application": {
+          let target: Awaited<ReturnType<MacExecutor["resolveApp"]>>;
+          try {
+            target = await this.resolveApp(registry, c.parameters);
+          } catch (error) {
+            if (c.parameters.query)
+              return await this.openNamed(
+                { query: c.parameters.query, kind: "any" },
+                registry,
+              );
+            throw error;
+          }
+          if ("success" in target && target.success === true) return target;
+          if (
+            c.parameters.newDocument === true &&
+            this.officeKindOfApp(target.name)
+          )
+            return await this.createOfficeDocument(
+              target,
+              c.parameters.title,
+            );
+          if (
+            target.name.toLowerCase() === "finder" ||
+            ("id" in target && target.id === "finder")
+          )
             await this.run("/usr/bin/open", [process.env.HOME ?? "/"]);
-          else {
-            const name = application(c.parameters.applicationId);
-            await this.openEditor(name, applicationPath(c.parameters.applicationId), {
+          else
+            await this.openEditor(target.name, target.path, {
               newWindow: c.parameters.newWindow === true,
             });
-          }
           return {
             success: true,
             message: c.parameters.newWindow
-              ? "Открыто новое окно: " +
-                application(c.parameters.applicationId)
-              : "Открыто: " + application(c.parameters.applicationId),
+              ? "Открыто новое окно: " + target.name
+              : "Открыто: " + target.name,
           };
-        case "close_application":
-          if (!confirmed) throw new Error("Требуется подтверждение");
-          await this.run("/usr/bin/osascript", [
-            "-e",
-            "on run argv\n tell application (item 1 of argv) to quit\nend run",
-            application(c.parameters.applicationId),
-          ]);
+        }
+        case "close_application": {
+          const target = await this.resolveApp(registry, c.parameters);
+          if ("success" in target && target.success === true) return target;
+          if (
+            c.parameters.documentOnly === true &&
+            (await this.closeOfficeDocument(target.name).catch(() => false))
+          )
+            return {
+              success: true,
+              message: "Закрыт документ: " + target.name,
+            };
+          await this.quitApp(target.name, target.path);
           return {
             success: true,
-            message:
-              "Запрошено закрытие приложения. Несохранённый документ может требовать ответа на Mac.",
+            message: "Закрыто: " + target.name,
           };
+        }
         case "open_project": {
           const p = project(c.parameters.projectId);
           const path = await guardPath(p.path, this.o.roots, "project");
@@ -324,7 +494,7 @@ export class MacExecutor {
             this.o.roots,
             c.action === "open_file" ? "file" : "folder",
           );
-          await this.run("/usr/bin/open", [path]);
+          await this.openUserPath(path);
           return {
             success: true,
             message: "Открыто: " + basename(path),
@@ -350,7 +520,9 @@ export class MacExecutor {
         case "new_browser_tab": {
           const name = application(c.parameters.applicationId);
           if (c.parameters.applicationId !== "chrome")
-            throw new Error("Новые вкладки пока поддерживаются для Google Chrome");
+            throw new Error(
+              "Новые вкладки пока поддерживаются для Google Chrome",
+            );
           await this.run("/usr/bin/open", ["-a", name]);
           await this.run("/usr/bin/osascript", [
             "-e",
@@ -360,6 +532,8 @@ export class MacExecutor {
         }
         case "search_files":
           return this.search(c.parameters);
+        case "search_drive":
+          return this.searchDrive(c.parameters);
         case "run_shortcut":
           if (!confirmed) throw new Error("Требуется подтверждение");
           await this.run("/usr/bin/shortcuts", [
@@ -444,6 +618,25 @@ export class MacExecutor {
     }
   }
   private async mock(c: Action, registry: Registry): Promise<ExecutionResult> {
+    if (c.action === "search_drive") {
+      const origin = driveOriginFromMcp(
+        this.o.driveUrl ?? "https://drive.esl.kz/mcp",
+      );
+      return {
+        success: true,
+        message: "Mock: найдены файлы на диске",
+        files: [
+          {
+            id: "1",
+            name: "Договор.pdf",
+            path: "/drive/files/1",
+            modifiedAt: new Date().toISOString(),
+            kind: "drive",
+            url: origin + "/app/preview/1",
+          },
+        ],
+      };
+    }
     if (c.action === "search_files") {
       const dir = resolve(this.o.dataDir, "mock-files");
       await mkdir(dir, { recursive: true });
@@ -485,6 +678,7 @@ export class MacExecutor {
       open_file: "Документ открыт",
       open_named_item: "Файл или папка открыты",
       open_editor_project: "Проект открыт в редакторе",
+      search_drive: "Найдены файлы на диске",
       open_application: "Приложение открыто",
       set_volume: "Громкость изменена",
       open_url: "Сайт открыт",
@@ -509,7 +703,9 @@ export class MacExecutor {
     const app = applicationId
       ? registry.applications.find((a) => a.id === applicationId)
       : (registry.applications.find((a) => a.id === "cursor") ??
-        registry.applications.find((a) => /cursor|visual studio code/i.test(a.name)));
+        registry.applications.find((a) =>
+          /cursor|visual studio code/i.test(a.name),
+        ));
     if (!app) throw new Error("Редактор не зарегистрирован");
     return app;
   }
@@ -537,7 +733,9 @@ export class MacExecutor {
     const cli = await this.findEditorCli(app.path, app.name);
     if (!cli)
       throw new Error(
-        "Не нашёл CLI " + app.name + ": удалённые проекты открываются через него.",
+        "Не нашёл CLI " +
+          app.name +
+          ": удалённые проекты открываются через него.",
       );
     await this.run(cli, [
       ...(newWindow ? ["-n"] : []),
@@ -559,7 +757,9 @@ export class MacExecutor {
       : await this.projects.find(p.query, p.host);
     if (!matches.length) {
       if (!p.query)
-        throw new Error("Проект из списка больше не доступен, повторите запрос");
+        throw new Error(
+          "Проект из списка больше не доступен, повторите запрос",
+        );
       // An unknown name may still be a plain folder on disk.
       return this.openNamed(
         { query: p.query, kind: "folder", applicationId: app.id },
@@ -612,7 +812,7 @@ export class MacExecutor {
           data: { path: guarded },
         };
       }
-      await this.run("/usr/bin/open", [guarded]);
+      await this.openUserPath(guarded);
       return {
         success: true,
         message: "Открыто: " + basename(guarded),
@@ -807,7 +1007,11 @@ export class MacExecutor {
         ? ["pdf"]
         : p.kind === "presentation"
           ? ["ppt", "pptx", "key"]
-          : [];
+          : p.kind === "spreadsheet"
+            ? ["xls", "xlsx", "xlsm", "csv", "numbers"]
+            : p.kind === "document"
+              ? ["doc", "docx", "rtf", "odt", "pages"]
+              : [];
     const filter = extensions.length
       ? "(" +
         nameFilter +
@@ -849,6 +1053,16 @@ export class MacExecutor {
         )
           continue;
         if (
+          p.kind === "spreadsheet" &&
+          !["xls", "xlsx", "xlsm", "csv", "numbers"].includes(extension)
+        )
+          continue;
+        if (
+          p.kind === "document" &&
+          !["doc", "docx", "rtf", "odt", "pages"].includes(extension)
+        )
+          continue;
+        if (
           needle &&
           !basename(actual).toLowerCase().includes(needle.toLowerCase())
         )
@@ -877,5 +1091,164 @@ export class MacExecutor {
         : "Подходящие файлы не найдены в разрешённых папках. Проверьте индекс Spotlight.",
       files: unique,
     };
+  }
+  private async resolveApp(
+    registry: Registry,
+    p: { applicationId?: string; query?: string },
+  ) {
+    const listed = p.applicationId
+      ? registry.applications.find((a) => a.id === p.applicationId)
+      : undefined;
+    if (listed && !p.query)
+      return { id: listed.id, name: listed.name, path: listed.path };
+    const extras: InstalledApp[] = registry.applications.map((app) => ({
+      name: app.name,
+      path: app.path ?? "/Applications/" + app.name + ".app",
+      aliases: app.aliases,
+    }));
+    const needle = (p.query || listed?.name || "").trim();
+    if (!needle) throw new Error("Назовите программу");
+    const pick = await this.apps.resolve(needle, extras);
+    if (pick.type === "none")
+      throw new Error(
+        "Не нашёл программу «" + needle + "» среди установленных на Mac.",
+      );
+    if (pick.type === "choose")
+      return {
+        success: true as const,
+        message: "Нашлось несколько программ. Назовите номер.",
+        files: pick.apps.map((app) => ({
+          id: app.path,
+          name: app.name,
+          path: app.path,
+          modifiedAt: new Date().toISOString(),
+          kind: "app" as const,
+        })),
+      };
+    return { name: pick.app.name, path: pick.app.path };
+  }
+  private driveClient() {
+    return new DriveMcpClient({
+      url: this.o.driveUrl ?? "https://drive.esl.kz/mcp",
+      token: this.o.driveToken ?? "",
+      origin: driveOriginFromMcp(this.o.driveUrl ?? "https://drive.esl.kz/mcp"),
+    });
+  }
+  private async searchDrive(
+    p: Extract<Action, { action: "search_drive" }>["parameters"],
+  ): Promise<ExecutionResult> {
+    const client = this.driveClient();
+    const toMatch = (hit: DriveHit): FileMatch => ({
+      id: String(hit.id),
+      name: hit.name,
+      path: "/drive/" + hit.kind + "s/" + hit.id,
+      modifiedAt: hit.updated_at ?? new Date().toISOString(),
+      kind: hit.kind,
+      url: client.openUrl(hit),
+    });
+    let selected: DriveHit[] = [];
+    if (p.fileId) {
+      try {
+        selected = [await client.get(p.fileId)];
+      } catch {
+        selected = [];
+      }
+    }
+    if (!selected.length && p.query) {
+      const found = new Map<number, DriveHit>();
+      const variants = driveSearchVariants(p.query);
+      const batches = await Promise.all(
+        variants.map((variant) => client.search(variant).catch(() => [])),
+      );
+      for (const hits of batches)
+        for (const hit of hits) found.set(hit.id, hit);
+      const picked = pickDriveHit([...found.values()], p.query);
+      selected = picked
+        ? [picked]
+        : p.fileId
+          ? [...found.values()].filter((hit) => hit.id === p.fileId)
+          : [];
+    }
+    if (!selected.length)
+      return {
+        success: true,
+        message: p.query
+          ? "На диске ничего не нашёл по запросу «" + p.query + "»."
+          : "На диске не нашёл этот файл.",
+        files: [],
+      };
+    if (p.open !== false) {
+      const hit =
+        selected.find((item) => item.kind !== "folder") ?? selected[0];
+      if (hit.kind === "folder")
+        return {
+          success: true,
+          message: "На диске нашёл папку «" + hit.name + "», но не файл.",
+          files: [toMatch(hit)],
+        };
+      const opened = await this.openDriveHit(client, hit);
+      if (opened) return opened;
+      const url = client.openUrl(hit);
+      try {
+        await this.run("/usr/bin/open", [url]);
+      } catch {
+        return {
+          success: true,
+          message: "Нашёл на диске: " + hit.name,
+          files: [toMatch(hit)],
+        };
+      }
+      return {
+        success: true,
+        message: "Открываю на диске: " + hit.name,
+        files: [toMatch(hit)],
+      };
+    }
+    const files = selected.slice(0, 10).map(toMatch);
+    return {
+      success: true,
+      message: "На диске нашлось вариантов: " + files.length,
+      files,
+    };
+  }
+  private async openDriveHit(client: DriveMcpClient, hit: DriveHit) {
+    if (hit.kind === "folder") return undefined;
+    const local = await this.openDriveOffice(client, hit);
+    if (local) return local;
+    return undefined;
+  }
+  private async openDriveOffice(client: DriveMcpClient, hit: DriveHit) {
+    try {
+      const blob = await client.read(hit.id);
+      if (blob.truncated || !blob.bytes.length) return undefined;
+      const dir = join(this.o.dataDir, "drive-open");
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      const ext = (hit.extension || extname(hit.name).slice(1)).toLowerCase();
+      const name =
+        basename(hit.name)
+          .replace(/[^\p{L}\p{N}._ ()-]/gu, "_")
+          .slice(0, 160) || "file";
+      const file = join(
+        dir,
+        name.includes(".") || !ext ? name : name + "." + ext,
+      );
+      await writeFile(file, blob.bytes, { mode: 0o600 });
+      await this.openUserPath(file);
+      return {
+        success: true,
+        message: "Открыто: " + basename(file),
+        files: [
+          {
+            id: String(hit.id),
+            name: hit.name,
+            path: file,
+            modifiedAt: hit.updated_at ?? new Date().toISOString(),
+            kind: "file" as const,
+          },
+        ],
+      };
+    } catch {
+      return undefined;
+    }
   }
 }

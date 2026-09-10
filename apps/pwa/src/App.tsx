@@ -2,58 +2,25 @@ import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, Mic, Square } from "lucide-react";
 import type { CommandRecord } from "@voice/shared";
 import { api, ApiError, post } from "./api";
+import { InstallApp } from "./InstallApp";
 import type { Device } from "./Settings";
+import {
+  foldSpeechResults,
+  piecesFromSpeechEvent,
+  preferLiveSpeechOnly,
+  speechRecognitionCtor,
+  type BrowserSpeechRecognition,
+} from "./live-speech";
+import {
+  commandProgress,
+  rememberSessionCommand,
+  type SessionEntry,
+} from "./session-history";
 
-/** Конечные статусы: polling можно остановить. */
-const finished = (command: CommandRecord) =>
-  ["done", "error", "cancelled"].includes(command.status);
-
-/** Пока команда жива (в т.ч. confirmation/clarification) — микрофон занят. */
-const inFlight = (command: CommandRecord) => !finished(command);
-
-function stageLabel(
-  recording: boolean,
-  sending: boolean,
-  command?: CommandRecord,
-): string {
-  if (recording) return "Запись";
-  if (sending) return "Отправка";
-  if (!command) return "";
-  switch (command.status) {
-    case "transcribing":
-      return "Распознавание";
-    case "processing":
-      return "Распознавание";
-    case "executing":
-      return "Выполнение";
-    case "confirmation":
-      return "Подтверждение";
-    case "clarification":
-      return "Уточнение";
-    case "done":
-      return "Готово";
-    case "error":
-      return "Ошибка";
-    case "cancelled":
-      return "Отменено";
-    default:
-      return "Выполнение";
-  }
-}
-
-function commandHint(command: CommandRecord): string {
-  const action = command.command?.action;
-  const params = command.command?.parameters as
-    | Record<string, string | undefined>
-    | undefined;
-  if (action === "open_url" && params?.url) return `Открыть ${params.url}`;
-  if (action === "open_application" && params?.applicationId)
-    return `Открыть приложение: ${params.applicationId}`;
-  if (action === "open_named_item" && params?.query)
-    return `Открыть: ${params.query}`;
-  if (action) return action;
-  return command.text || "Команда";
-}
+const terminal = (command: CommandRecord) =>
+  ["done", "error", "cancelled", "clarification", "confirmation"].includes(
+    command.status,
+  );
 
 export function App() {
   const [paired, setPaired] = useState(false);
@@ -63,20 +30,33 @@ export function App() {
   const [sending, setSending] = useState(false);
   const [current, setCurrent] = useState<CommandRecord>();
   const [failed, setFailed] = useState(false);
-  const [clarifyAnswer, setClarifyAnswer] = useState("");
-  const [acting, setActing] = useState(false);
   const [code, setCode] = useState("");
+  const [liveFinal, setLiveFinal] = useState("");
+  const [liveInterim, setLiveInterim] = useState("");
+  const [recent, setRecent] = useState<SessionEntry[]>([]);
   const recorder = useRef<MediaRecorder | null>(null);
   const stream = useRef<MediaStream | null>(null);
-  const timeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const silenceFrame = useRef<number | undefined>(undefined);
-  const audioContext = useRef<AudioContext | null>(null);
+  const blobFallback = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
   const discard = useRef(false);
+  const listening = useRef(false);
+  const recognition = useRef<BrowserSpeechRecognition | null>(null);
+  const live = useRef({ final: "", interim: "" });
+  const committed = useRef("");
+  const heardVoice = useRef(false);
 
-  const working = sending || !!(current && inFlight(current));
+  const working = sending || !!(current && !terminal(current));
+  const caption = [liveFinal, liveInterim].filter(Boolean).join(" ");
+  const showCaption = !!caption;
+  const progress = current ? commandProgress(current) : "";
   const update = (command: CommandRecord) => {
     setCurrent(command);
     setFailed(command.status === "error");
+    setRecent((list) => rememberSessionCommand(list, command));
+    const spoken = command.text.replace(/\s+/g, " ").trim();
+    if (spoken && !live.current.final && !live.current.interim)
+      setCaption(spoken, "");
   };
 
   async function load() {
@@ -134,9 +114,8 @@ export function App() {
     };
   }, [paired]);
 
-  // Poll until done/error/cancelled (включая confirmation/clarification → итог).
   useEffect(() => {
-    if (!current || finished(current)) return;
+    if (!current || terminal(current)) return;
     const poll = setInterval(() => {
       void api<CommandRecord>("/api/commands/" + current.id)
         .then(update)
@@ -144,6 +123,16 @@ export function App() {
     }, 300);
     return () => clearInterval(poll);
   }, [current?.id, current?.status]);
+
+  useEffect(() => {
+    if (recording || !current || !terminal(current) || !caption) return;
+    const hide = setTimeout(() => {
+      live.current = { final: "", interim: "" };
+      setLiveFinal("");
+      setLiveInterim("");
+    }, 1400);
+    return () => clearTimeout(hide);
+  }, [recording, current?.status, caption]);
 
   async function pair(event: React.FormEvent) {
     event.preventDefault();
@@ -155,6 +144,24 @@ export function App() {
         name: "Телефон",
       });
       await load();
+    } catch {
+      setFailed(true);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function sendText(text: string) {
+    const spoken = text.replace(/\s+/g, " ").trim();
+    if (!spoken) {
+      setFailed(true);
+      return;
+    }
+    setSending(true);
+    try {
+      update(
+        await post<CommandRecord>("/api/text-command", { text: spoken }),
+      );
     } catch {
       setFailed(true);
     } finally {
@@ -181,61 +188,93 @@ export function App() {
     }
   }
 
+  function setCaption(finalText: string, interimText: string) {
+    live.current = { final: finalText, interim: interimText };
+    setLiveFinal(finalText);
+    setLiveInterim(interimText);
+  }
+
+  function clearTimers() {
+    clearTimeout(blobFallback.current);
+    blobFallback.current = undefined;
+  }
+
   function stopRecording(cancel = false) {
+    if (!listening.current && recorder.current?.state !== "recording") return;
     discard.current = cancel;
-    clearTimeout(timeout.current);
-    if (silenceFrame.current) cancelAnimationFrame(silenceFrame.current);
-    void audioContext.current?.close().catch(() => undefined);
-    audioContext.current = null;
-    if (recorder.current?.state === "recording") recorder.current.stop();
+    listening.current = false;
+    clearTimers();
+    const spoken = [live.current.final, live.current.interim]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    const blobWasRecording = recorder.current?.state === "recording";
+    recognition.current?.stop();
+    recognition.current = null;
+    if (blobWasRecording) recorder.current?.stop();
     stream.current?.getTracks().forEach((track) => track.stop());
+    stream.current = null;
     setRecording(false);
+    if (!blobWasRecording && !cancel) void sendText(spoken);
   }
 
-  function detectSilence(mediaStream: MediaStream) {
-    const Context =
-      window.AudioContext ??
-      (window as typeof window & { webkitAudioContext?: typeof AudioContext })
-        .webkitAudioContext;
-    if (!Context) return;
-    const context = new Context();
-    audioContext.current = context;
-    const analyser = context.createAnalyser();
-    analyser.fftSize = 1024;
-    context.createMediaStreamSource(mediaStream).connect(analyser);
-    const samples = new Float32Array(analyser.fftSize);
-    const startedAt = performance.now();
-    let heardVoice = false;
-    let lastVoiceAt = startedAt;
-    const inspect = () => {
-      if (recorder.current?.state !== "recording") return;
-      analyser.getFloatTimeDomainData(samples);
-      const rms = Math.sqrt(
-        samples.reduce((sum, value) => sum + value * value, 0) / samples.length,
+  function startDictation() {
+    const Ctor = speechRecognitionCtor();
+    if (!Ctor) return false;
+    const rec = new Ctor();
+    rec.lang = "ru-RU";
+    rec.continuous = !preferLiveSpeechOnly();
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    rec.onresult = (event) => {
+      if (discard.current) return;
+      const folded = foldSpeechResults(piecesFromSpeechEvent(event));
+      heardVoice.current = true;
+      setCaption(
+        [committed.current, folded.finalText].filter(Boolean).join(" "),
+        folded.interimText,
       );
-      const now = performance.now();
-      if (rms > 0.018) {
-        heardVoice = true;
-        lastVoiceAt = now;
-      }
-      if (heardVoice && now - lastVoiceAt > 550 && now - startedAt > 800) {
-        stopRecording();
-        return;
-      }
-      silenceFrame.current = requestAnimationFrame(inspect);
     };
-    silenceFrame.current = requestAnimationFrame(inspect);
+    rec.onerror = (event) => {
+      if (!listening.current) return;
+      if (
+        event.error === "no-speech" ||
+        event.error === "aborted" ||
+        event.error === "network"
+      )
+        return;
+      if (
+        event.error === "not-allowed" ||
+        event.error === "service-not-allowed"
+      ) {
+        if (recorder.current?.state === "recording") return;
+        stopRecording(true);
+        setFailed(true);
+      }
+    };
+    rec.onend = () => {
+      if (!listening.current || recognition.current !== rec) return;
+      committed.current = live.current.final;
+      try {
+        rec.start();
+      } catch {
+        if (recorder.current?.state !== "recording")
+          void startBlobRecording();
+      }
+    };
+    try {
+      rec.start();
+    } catch {
+      return false;
+    }
+    recognition.current = rec;
+    return true;
   }
 
-  async function startRecording() {
-    setFailed(false);
-    setCurrent(undefined);
-    setClarifyAnswer("");
-    discard.current = false;
-    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-      setFailed(true);
-      return;
-    }
+  async function startBlobRecording() {
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia)
+      return false;
+    if (recorder.current?.state === "recording") return true;
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
@@ -261,70 +300,49 @@ export function App() {
         mediaStream.getTracks().forEach((track) => track.stop());
         if (discard.current) return;
         const blob = new Blob(chunks, { type: mediaRecorder.mimeType });
+        const spoken = [live.current.final, live.current.interim]
+          .filter(Boolean)
+          .join(" ")
+          .trim();
         if (blob.size) void upload(blob);
+        else if (spoken) void sendText(spoken);
         else setFailed(true);
       };
       mediaRecorder.start(200);
+      return true;
+    } catch {
+      stream.current?.getTracks().forEach((track) => track.stop());
+      stream.current = null;
+      recorder.current = null;
+      return false;
+    }
+  }
+
+  async function startRecording() {
+    setFailed(false);
+    setCurrent(undefined);
+    discard.current = false;
+    listening.current = true;
+    heardVoice.current = false;
+    committed.current = "";
+    setCaption("", "");
+    const dictated = startDictation();
+    if (preferLiveSpeechOnly() && dictated) {
       setRecording(true);
-      detectSilence(mediaStream);
-      timeout.current = setTimeout(() => stopRecording(), 8_000);
-    } catch {
-      setFailed(true);
-      setRecording(false);
+      blobFallback.current = setTimeout(() => {
+        if (!listening.current || heardVoice.current) return;
+        void startBlobRecording();
+      }, 1600);
+      return;
     }
-  }
-
-  async function confirmCommand() {
-    if (!current) return;
-    setActing(true);
-    try {
-      update(
-        await post<CommandRecord>("/api/commands/" + current.id + "/confirm", {
-          approved: true,
-        }),
-      );
-    } catch {
+    const startedBlob = await startBlobRecording();
+    if (!startedBlob && !recognition.current) {
+      listening.current = false;
       setFailed(true);
-    } finally {
-      setActing(false);
+      return;
     }
+    setRecording(true);
   }
-
-  async function cancelCommand() {
-    if (!current) return;
-    setActing(true);
-    try {
-      update(
-        await post<CommandRecord>("/api/commands/" + current.id + "/cancel", {}),
-      );
-    } catch {
-      setFailed(true);
-    } finally {
-      setActing(false);
-    }
-  }
-
-  async function clarifyCommand(answer: string) {
-    if (!current || !answer.trim()) return;
-    setActing(true);
-    try {
-      update(
-        await post<CommandRecord>("/api/commands/" + current.id + "/clarify", {
-          answer: answer.trim(),
-        }),
-      );
-      setClarifyAnswer("");
-    } catch {
-      setFailed(true);
-    } finally {
-      setActing(false);
-    }
-  }
-
-  const label = stageLabel(recording, sending, current);
-  const outcome =
-    current?.result?.message ||
-    (failed && !current ? "Не удалось выполнить запрос" : "");
 
   if (loading)
     return (
@@ -335,132 +353,92 @@ export function App() {
 
   if (!paired)
     return (
-      <main className="single-screen">
-        <form className="pair-only" onSubmit={(event) => void pair(event)}>
-          <input
-            aria-label="Код подключения"
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            maxLength={8}
-            value={code}
-            onChange={(event) => setCode(event.target.value.replace(/\D/g, ""))}
-          />
-          <button
-            disabled={sending || code.length !== 8}
-            aria-label="Подключить"
-          >
-            {sending ? <LoaderCircle className="spin" /> : <Mic />}
-          </button>
-        </form>
-      </main>
+      <>
+        <main className="single-screen">
+          <form className="pair-only" onSubmit={(event) => void pair(event)}>
+            <input
+              aria-label="Код подключения"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={8}
+              value={code}
+              onChange={(event) =>
+                setCode(event.target.value.replace(/\D/g, ""))
+              }
+            />
+            <button
+              disabled={sending || code.length !== 8}
+              aria-label="Подключить"
+            >
+              {sending ? <LoaderCircle className="spin" /> : <Mic />}
+            </button>
+          </form>
+        </main>
+        <InstallApp />
+      </>
     );
 
   return (
-    <main className="single-screen">
-      <button
-        className={`single-record ${recording ? "is-recording" : ""} ${working ? "is-working" : ""} ${failed || !online ? "is-failed" : ""}`}
-        aria-label={recording ? "Остановить запись" : "Записать команду"}
-        disabled={!online || working || acting}
-        onClick={() => (recording ? stopRecording() : void startRecording())}
-      >
-        {recording ? (
-          <Square fill="currentColor" />
-        ) : working ? (
-          <LoaderCircle className="spin" />
-        ) : (
-          <Mic />
-        )}
-      </button>
-
-      <div className="voice-status" aria-live="polite">
-        {label ? <p className="voice-stage">{label}</p> : null}
-        {!online ? (
-          <p className="voice-hint">Агент офлайн</p>
-        ) : null}
-        {current?.text ? (
-          <p className="voice-transcript">{current.text}</p>
-        ) : null}
-        {outcome ? (
-          <p
-            className={
-              current?.status === "error" || failed
-                ? "voice-error"
-                : "voice-result"
+    <>
+      <main className="single-screen">
+        <div className="single-stage">
+          <button
+            className={`single-record ${recording ? "is-recording" : ""} ${working ? "is-working" : ""} ${failed || !online ? "is-failed" : ""}`}
+            aria-label={recording ? "Остановить запись" : "Записать команду"}
+            disabled={!online || working}
+            onClick={() =>
+              recording ? stopRecording() : void startRecording()
             }
           >
-            {outcome}
-          </p>
-        ) : null}
-
-        {current?.status === "confirmation" ? (
-          <div className="voice-actions">
-            <p className="voice-hint">{commandHint(current)}</p>
-            <button
-              type="button"
-              disabled={acting}
-              onClick={() => void confirmCommand()}
-            >
-              Подтвердить
-            </button>
-            <button
-              type="button"
-              className="is-secondary"
-              disabled={acting}
-              onClick={() => void cancelCommand()}
-            >
-              Отмена
-            </button>
-          </div>
-        ) : null}
-
-        {current?.status === "clarification" ? (
-          <div className="voice-actions">
-            {current.question ? (
-              <p className="voice-hint">{current.question}</p>
+            {recording ? (
+              <Square fill="currentColor" />
+            ) : working ? (
+              <LoaderCircle className="spin" />
+            ) : (
+              <Mic />
+            )}
+          </button>
+        </div>
+        {recording || showCaption || progress || recent.length ? (
+          <div className="stage-overlay">
+            {recording || showCaption ? (
+              <p className="live-caption" aria-live="polite">
+                {liveFinal ? <span>{liveFinal}</span> : null}
+                {liveInterim ? (
+                  <span className="is-interim">
+                    {liveFinal ? " " : ""}
+                    {liveInterim}
+                  </span>
+                ) : null}
+                {!liveFinal && !liveInterim && recording ? (
+                  <span className="is-interim">…</span>
+                ) : null}
+              </p>
             ) : null}
-            {current.options?.length ? (
-              <div className="voice-options">
-                {current.options.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    disabled={acting}
-                    onClick={() => void clarifyCommand(option.id)}
+            {progress ? (
+              <p
+                className={`command-status ${working ? "is-working" : ""} ${current?.status === "error" ? "is-error" : ""} ${current?.status === "done" ? "is-done" : ""}`}
+                aria-live="polite"
+              >
+                {progress}
+              </p>
+            ) : null}
+            {recent.length ? (
+              <ol className="session-history" aria-label="Последние команды">
+                {recent.map((item) => (
+                  <li
+                    key={item.id}
+                    className={item.failed ? "is-error" : undefined}
                   >
-                    {option.label}
-                  </button>
+                    {item.text}
+                  </li>
                 ))}
-              </div>
+              </ol>
             ) : null}
-            <form
-              className="voice-clarify"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void clarifyCommand(clarifyAnswer);
-              }}
-            >
-              <input
-                aria-label="Ответ"
-                value={clarifyAnswer}
-                disabled={acting}
-                onChange={(event) => setClarifyAnswer(event.target.value)}
-                placeholder="Ответ…"
-              />
-              <button type="submit" disabled={acting || !clarifyAnswer.trim()}>
-                Отправить
-              </button>
-            </form>
-            <button
-              type="button"
-              className="is-secondary"
-              disabled={acting}
-              onClick={() => void cancelCommand()}
-            >
-              Отмена
-            </button>
           </div>
         ) : null}
-      </div>
-    </main>
+      </main>
+      <InstallApp hidden={recording || working} />
+    </>
   );
 }

@@ -205,6 +205,8 @@ export function preferSpokenUrl(
   registry: Registry,
   decision: AssistantDecision,
 ): AssistantDecision {
+  if (decision.type === "execute" && decision.action === "search_drive")
+    return decision;
   const spoken = extractSpokenUrl(text, registry);
   if (!spoken) return decision;
   if (decision.type === "execute" && decision.action === "open_url") {

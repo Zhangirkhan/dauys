@@ -15,7 +15,6 @@ export type Device = {
   role: "client" | "agent";
   online: boolean;
   revoked: number;
-  platform?: "darwin" | "win32" | "linux" | null;
 };
 export function Settings({
   registry,
@@ -140,7 +139,7 @@ export function Settings({
             />
           </label>
           <label>
-            Путь на компьютере
+            Путь на Mac
             <input
               value={p.path}
               onChange={(e) => changeProject(i, "path", e.target.value)}
@@ -189,7 +188,7 @@ export function Settings({
             <summary>Сценарии</summary>
             <p className="muted">
               Шаги из белого списка. Команды запуска настраиваются только
-              локально на компьютере.
+              локально на Mac.
             </p>
             <textarea
               aria-label={"Сценарии " + p.name}
@@ -246,7 +245,7 @@ export function Settings({
             </button>
           </div>
           <label>
-            Название приложения
+            Название в macOS
             <input
               value={a.name}
               onChange={(e) =>
@@ -310,14 +309,6 @@ export function Settings({
                 {d.name}
                 <small className="muted block">
                   {d.online ? "Подключено" : "Не в сети"}
-                  {d.role === "agent" && d.platform
-                    ? " · " +
-                      (d.platform === "win32"
-                        ? "Windows"
-                        : d.platform === "darwin"
-                          ? "macOS"
-                          : d.platform)
-                    : ""}
                 </small>
               </span>
             </div>
@@ -334,7 +325,7 @@ export function Settings({
             </button>
           </div>
         ))}
-      <p className="footnote">Секреты и команды запуска хранятся на компьютере.</p>
+      <p className="footnote">Секреты и команды запуска хранятся на Mac.</p>
     </main>
   );
 }

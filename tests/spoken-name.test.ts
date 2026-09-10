@@ -46,10 +46,27 @@ describe("spoken name matching", () => {
     );
   });
 
-  it("matches a latin filename to a cyrillic spoken stem", () => {
+  it("matches a latin Energy Plus spreadsheet to spoken «энерджи плюс»", () => {
+    expect(spokenNameVariants("энерджи плюс", "file")).toEqual(
+      expect.arrayContaining(["energy plus"]),
+    );
     expect(
-      scoreNamedPath("/Users/me/Documents/otchet.pdf", "отчет", "file"),
-    ).toBeGreaterThan(800);
+      scoreNamedPath(
+        "/Users/me/Desktop/таблица Energy plus.xlsx",
+        "энерджи плюс",
+        "file",
+      ),
+    ).toBeGreaterThan(200);
+    expect(
+      pickNamedMatch(
+        ["/Users/me/Desktop/таблица Energy plus.xlsx"],
+        "energy plus",
+        "file",
+      ),
+    ).toEqual({
+      type: "open",
+      path: "/Users/me/Desktop/таблица Energy plus.xlsx",
+    });
   });
 
   it("matches any extension, not only documents", () => {

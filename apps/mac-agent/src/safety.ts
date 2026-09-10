@@ -8,7 +8,6 @@ import {
   requiresConfirmation,
   type Envelope,
 } from "../../../packages/shared/src/index.js";
-import { guardWindowsPath } from "./windows/path.js";
 export const documentExtensions = new Set([
   ".pdf",
   ".ppt",
@@ -47,23 +46,11 @@ export function isWithin(path: string, root: string) {
     (!rel.startsWith(".." + sep) && rel !== ".." && !isAbsolute(rel))
   );
 }
-function looksWindows(path: string, roots: string[]) {
-  return (
-    process.platform === "win32" ||
-    /^[A-Za-z]:[\\/]/.test(path) ||
-    roots.some((r) => /^[A-Za-z]:[\\/]/.test(r))
-  );
-}
 export async function guardPath(
   path: string,
   roots: string[],
   kind: "file" | "folder" | "project" = "file",
 ) {
-  if (looksWindows(path, roots)) {
-    return guardWindowsPath(path, roots, kind, {
-      allowUnc: process.env.ALLOW_UNC_PATHS === "true",
-    });
-  }
   if (!isAbsolute(path) || /[\x00-\x1f]/.test(path))
     throw new Error("Небезопасный путь");
   const actual = await realpath(path);
@@ -87,7 +74,11 @@ export async function guardPath(
       "Скрытые файлы, пакеты приложений и автоматизации запрещены.",
     );
   const info = await stat(actual);
-  if (kind === "file" && !info.isFile()) throw new Error("Ожидался файл");
+  if (
+    kind === "file" &&
+    !info.isFile()
+  )
+    throw new Error("Ожидался файл");
   if (kind !== "file" && !info.isDirectory())
     throw new Error("Ожидалась папка");
   return actual;
@@ -98,13 +89,7 @@ export class ExecutionLedger {
     if (path !== ":memory:")
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
-    if (path !== ":memory:") {
-      try {
-        chmodSync(path, 0o600);
-      } catch {
-        /* Windows ACL applied separately for agent data files */
-      }
-    }
+    if (path !== ":memory:") chmodSync(path, 0o600);
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS executed(id TEXT PRIMARY KEY,expiresAt INTEGER)",
     );

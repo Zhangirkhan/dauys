@@ -86,6 +86,10 @@ test("one tap and recorded speech open Google Chrome automatically", async ({
         await expect(
           page.getByRole("button", { name: "Остановить запись", exact: true }),
         ).toBeVisible();
+        await page.waitForTimeout(2500);
+        await page
+          .getByRole("button", { name: "Остановить запись", exact: true })
+          .click();
         const value = await page.evaluate(
           async ({ expected, previousIds }) => {
             const deadline = Date.now() + 60_000;

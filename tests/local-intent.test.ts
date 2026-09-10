@@ -78,6 +78,68 @@ describe("real local intent without cloud keys", () => {
       newWindow: true,
     });
   });
+  it("opens Word and Excel as apps, not as file search", async () => {
+    for (const [text, query] of [
+      ["Открой эксель", "эксель"],
+      ["Открой ворд", "ворд"],
+      ["Открой excel", "excel"],
+    ] as const) {
+      const d = await resolver.resolve({ text, registry, context });
+      expect(d.type === "execute" && d.action).toBe("open_application");
+      expect(d.type === "execute" && d.parameters).toEqual({ query });
+    }
+  });
+  it("creates a new Excel or Word document instead of a Cursor window", async () => {
+    const excel = await resolver.resolve({
+      text: "Создай новый эксель",
+      registry,
+      context,
+    });
+    expect(excel.type === "execute" && excel.parameters).toEqual({
+      query: "excel",
+      newDocument: true,
+    });
+    const word = await resolver.resolve({
+      text: "Открой новый ворд",
+      registry,
+      context,
+    });
+    expect(word.type === "execute" && word.parameters).toEqual({
+      query: "word",
+      newDocument: true,
+    });
+  });
+  it("closes Excel/Word or only the current document", async () => {
+    const excel = await resolver.resolve({
+      text: "Закрой эксель",
+      registry,
+      context,
+    });
+    expect(excel.type === "execute" && excel.parameters).toEqual({
+      query: "excel",
+    });
+    const doc = await resolver.resolve({
+      text: "Закрой документ в ворде",
+      registry,
+      context,
+    });
+    expect(doc.type === "execute" && doc.parameters).toEqual({
+      query: "word",
+      documentOnly: true,
+    });
+  });
+  it("still searches a named spreadsheet instead of launching Excel", async () => {
+    const d = await resolver.resolve({
+      text: "Открой эксель таблицу энерджи плюс",
+      registry,
+      context,
+    });
+    expect(d.type === "execute" && d.action).toBe("open_named_item");
+    expect(d.type === "execute" && d.parameters).toEqual({
+      query: "энерджи плюс",
+      kind: "file",
+    });
+  });
   it("searches for an unnamed spoken project instead of reusing the active one", async () => {
     const d = await resolver.resolve({
       text: "Открой неизвестный проект в курсоре",
@@ -166,6 +228,18 @@ describe("real local intent without cloud keys", () => {
       kind: "folder",
     });
   });
+  it("searches the corporate drive instead of a local folder", async () => {
+    const d = await resolver.resolve({
+      text: "Найди на диске договор каспи",
+      registry,
+      context,
+    });
+    expect(d.type === "execute" && d.action).toBe("search_drive");
+    expect(d.type === "execute" && d.parameters).toEqual({
+      query: "договор каспи",
+      open: true,
+    });
+  });
   it("opens an arbitrary file by name", async () => {
     const d = await resolver.resolve({
       text: "Открой файл отчет",
@@ -178,6 +252,18 @@ describe("real local intent without cloud keys", () => {
       kind: "file",
     });
   });
+  it("opens a spoken spreadsheet by name instead of an app", async () => {
+    const d = await resolver.resolve({
+      text: "Открой эксель таблицу энерджи плюс",
+      registry,
+      context,
+    });
+    expect(d.type === "execute" && d.action).toBe("open_named_item");
+    expect(d.type === "execute" && d.parameters).toEqual({
+      query: "энерджи плюс",
+      kind: "file",
+    });
+  });
   it("opens a spoken folder name that is not a registered app or project", async () => {
     const d = await resolver.resolve({
       text: "Открой документы",
@@ -186,6 +272,46 @@ describe("real local intent without cloud keys", () => {
     });
     expect(d.type === "execute" && d.action).toBe("open_named_item");
     expect(d.type === "execute" && d.parameters.query).toBe("документы");
+  });
+  it("opens any installed app by spoken name without a registry id", async () => {
+    const d = await resolver.resolve({
+      text: "Открой калькулятор",
+      registry,
+      context,
+    });
+    expect(d.type === "execute" && d.action).toBe("open_application");
+    expect(d.type === "execute" && d.parameters).toEqual({
+      query: "калькулятор",
+    });
+  });
+  it("launches an installed app with запусти", async () => {
+    const d = await resolver.resolve({
+      text: "Запусти калькулятор",
+      registry,
+      context,
+    });
+    expect(d.type === "execute" && d.action).toBe("open_application");
+    expect(d.type === "execute" && d.parameters).toEqual({
+      query: "калькулятор",
+    });
+  });
+  it("closes an installed app by spoken name", async () => {
+    const d = await resolver.resolve({
+      text: "Закрой заметки",
+      registry,
+      context,
+    });
+    expect(d.type === "execute" && d.action).toBe("close_application");
+    expect(d.type === "execute" && d.parameters).toEqual({ query: "заметки" });
+  });
+  it("opens WhatsApp by spoken Russian names", async () => {
+    for (const text of ["Открой ватсап", "Открой ватсапп", "Открой вацап"]) {
+      const d = await resolver.resolve({ text, registry, context });
+      expect(d.type === "execute" && d.action).toBe("open_application");
+      expect(d.type === "execute" && d.parameters).toEqual({
+        query: text.replace(/^открой /i, "").toLocaleLowerCase("ru"),
+      });
+    }
   });
   it("opens the registered project folder only when that project is named", async () => {
     const d = await resolver.resolve({
@@ -232,6 +358,24 @@ describe("spoken folder and file names", () => {
       query: "отчет",
       kind: "file",
     });
+    expect(extractSpokenItem("Открой таблицу energy plus")).toEqual({
+      query: "energy plus",
+      kind: "file",
+    });
+    expect(extractSpokenItem("Открой эксель таблицу энерджи плюс")).toEqual({
+      query: "энерджи плюс",
+      kind: "file",
+    });
+    expect(extractSpokenItem("Открой акцель таблицу energy plus")).toEqual({
+      query: "energy plus",
+      kind: "file",
+    });
+    expect(extractSpokenItem("Открой презентацию")).toBeUndefined();
+    expect(extractSpokenItem("Открой последний PDF")).toBeUndefined();
+    expect(extractSpokenItem("Открой excel")).toEqual({
+      query: "excel",
+      kind: "any",
+    });
     expect(extractSpokenItem("Открой документы")).toEqual({
       query: "документы",
       kind: "any",
@@ -270,6 +414,23 @@ describe("spoken folder and file names", () => {
     expect(rewritten.type === "execute" && rewritten.parameters).toEqual({
       applicationId: "cursor",
       newWindow: true,
+    });
+  });
+  it("does not steal a new Excel document into a Cursor window", () => {
+    const rewritten = preferSpokenNamedItem(
+      "Создай новый эксель",
+      registry,
+      execute(
+        {
+          action: "open_application",
+          parameters: { applicationId: "cursor", newWindow: true },
+        },
+        "Открываю новое окно Cursor",
+      ),
+    );
+    expect(rewritten.type === "execute" && rewritten.parameters).toEqual({
+      query: "excel",
+      newDocument: true,
     });
   });
   it("does not let an active project replace a spoken folder name", () => {

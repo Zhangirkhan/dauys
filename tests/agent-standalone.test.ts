@@ -11,7 +11,6 @@ const keys = [
   "DAUYS_STANDALONE",
   "AGENT_DATA_DIR",
   "ALLOW_REAL_MAC_ACTIONS",
-  "ALLOW_REAL_ACTIONS",
 ] as const;
 
 const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
@@ -47,14 +46,7 @@ describe("standalone agent paths", () => {
     process.env.DAUYS_STANDALONE = "true";
     process.env.AGENT_DATA_DIR = "/tmp/dauys-agent-test";
     process.env.ALLOW_REAL_MAC_ACTIONS = "false";
-    delete process.env.ALLOW_REAL_ACTIONS;
     expect(agentDataDir()).toBe("/tmp/dauys-agent-test");
     expect(defaultRealActions()).toBe(false);
-  });
-
-  it("prefers ALLOW_REAL_ACTIONS over ALLOW_REAL_MAC_ACTIONS", () => {
-    process.env.ALLOW_REAL_MAC_ACTIONS = "false";
-    process.env.ALLOW_REAL_ACTIONS = "true";
-    expect(defaultRealActions()).toBe(true);
   });
 });

@@ -10,6 +10,13 @@ import {
 } from "./intent.js";
 import { extractSpokenItem } from "./named-item.js";
 import { extractSpokenUrl } from "./spoken-url.js";
+import {
+  extractCloseOffice,
+  extractNewOfficeDocument,
+  extractSpokenDrive,
+  officeAppQuery,
+} from "../../../packages/shared/src/index.js";
+import { knownFolderPath } from "../../mac-agent/src/executor.js";
 
 const normalize = (s: string) =>
   s
@@ -82,6 +89,23 @@ export class LocalIntentResolver implements IntentResolver {
         reason:
           "Это действие запрещено. Можно открыть программу или зарегистрированный проект.",
       };
+    const drive = extractSpokenDrive(
+      pending ? pending.originalText + " " + text : text,
+    );
+    if (drive) {
+      if (!drive.query)
+        return {
+          type: "clarification",
+          question: "Какой файл найти на диске? Назовите имя, тип или дату.",
+        };
+      return execute(
+        {
+          action: "search_drive",
+          parameters: { query: drive.query, open: true },
+        },
+        "Ищу на диске: " + drive.query,
+      );
+    }
     if (
       /(?:^| )(?:не|нельзя) (?:откр|запус|включ|закр)|(?:^| )(?:как|зачем|почему) (?:откр|запус|закр)/.test(
         q,
@@ -94,7 +118,7 @@ export class LocalIntentResolver implements IntentResolver {
       };
     const close = /(?:^| )(?:закрой|закрыть|закройте)(?: |$)/.test(q);
     const opening =
-      /(?:^| )(?:открой|открыть|открою|откроем|откройте|запусти|запустить|включи|покажи)(?: |$)|поработ|продолж/.test(
+      /(?:^| )(?:открой|открыть|открою|откроем|откройте|запусти|запустить|включи|покажи|вытащи|вытащу|вытяну)(?: |$)|поработ|продолж/.test(
         q,
       );
     let projects = localMatches(text, registry.projects),
@@ -175,6 +199,43 @@ export class LocalIntentResolver implements IntentResolver {
         { action: "open_url", parameters: spokenUrl },
         "Открываю " + spokenUrl.url,
       );
+    const officeNew = extractNewOfficeDocument(q);
+    if (officeNew)
+      return execute(
+        {
+          action: "open_application",
+          parameters: {
+            query: officeAppQuery(officeNew.kind),
+            newDocument: true,
+            ...(officeNew.title ? { title: officeNew.title } : {}),
+          },
+        },
+        officeNew.kind === "excel"
+          ? officeNew.title
+            ? "Создаю таблицу «" + officeNew.title + "» в Excel"
+            : "Создаю новую таблицу в Excel"
+          : officeNew.title
+            ? "Создаю документ «" + officeNew.title + "» в Word"
+            : "Создаю новый документ Word",
+      );
+    const officeClose = extractCloseOffice(q);
+    if (officeClose)
+      return execute(
+        {
+          action: "close_application",
+          parameters: {
+            query: officeAppQuery(officeClose.kind),
+            ...(officeClose.documentOnly ? { documentOnly: true } : {}),
+          },
+        },
+        officeClose.documentOnly
+          ? officeClose.kind === "excel"
+            ? "Закрываю таблицу в Excel"
+            : "Закрываю документ Word"
+          : officeClose.kind === "excel"
+            ? "Закрываю Excel"
+            : "Закрываю Word",
+      );
     const wantsNewEditor =
       /(?:создай|открой|открыть|открою|откроем|откройте).{0,30}нов(?:ый|ое|ую)|нов(?:ый|ое|ую) (?:проект|окно)|пуст(?:ое|ой|ую) (?:окно|проект)|new (?:project|window)/.test(
         q,
@@ -216,7 +277,9 @@ export class LocalIntentResolver implements IntentResolver {
       const editor =
         app ??
         registry.applications.find((a) => a.id === "cursor") ??
-        registry.applications.find((a) => /cursor|visual studio code/i.test(a.name));
+        registry.applications.find((a) =>
+          /cursor|visual studio code/i.test(a.name),
+        );
       if (editor)
         return execute(
           {
@@ -263,7 +326,10 @@ export class LocalIntentResolver implements IntentResolver {
                   applicationId: app.id,
                 },
               }
-            : { action: "open_folder", parameters: { path: namedProject.path } },
+            : {
+                action: "open_folder",
+                parameters: { path: namedProject.path },
+              },
           app
             ? "Открываю " + namedProject.name + " в " + app.name
             : "Открываю папку " + namedProject.name,
@@ -292,18 +358,30 @@ export class LocalIntentResolver implements IntentResolver {
           "Скажите «Открой» и название программы или проекта. Например: «Открой Telegram».",
       };
     if (close) {
-      if (!app)
-        return {
-          type: "clarification",
-          question: "Какое приложение закрыть?",
-          options: registry.applications
-            .slice(0, 10)
-            .map((a) => ({ id: "app:" + a.id, label: a.name })),
-        };
-      return execute(
-        { action: "close_application", parameters: { applicationId: app.id } },
-        "Закрыть " + app.name + "?",
-      );
+      if (app)
+        return execute(
+          {
+            action: "close_application",
+            parameters: { applicationId: app.id },
+          },
+          "Закрываю " + app.name,
+        );
+      const rest = q
+        .replace(/^(?:закрой|закрыть|закройте)\s+/, "")
+        .replace(/^(?:приложение|программу|прога|прогу)\s+/, "")
+        .trim();
+      if (rest && !/^(его|ее|это|этот|тот)$/.test(rest))
+        return execute(
+          { action: "close_application", parameters: { query: rest } },
+          "Закрываю " + rest,
+        );
+      return {
+        type: "clarification",
+        question: "Какое приложение закрыть?",
+        options: registry.applications
+          .slice(0, 10)
+          .map((a) => ({ id: "app:" + a.id, label: a.name })),
+      };
     }
     if (project) {
       if (/(?:запусти|запустить).*(?:сервер|сценарий)/.test(q)) {
@@ -368,16 +446,30 @@ export class LocalIntentResolver implements IntentResolver {
         { action: "open_application", parameters: { applicationId: app.id } },
         "Открываю " + app.name,
       );
-    if (opening && spoken?.query)
+    if (opening && spoken?.kind === "file")
       return execute(
         {
           action: "open_named_item",
-          parameters: {
-            query: spoken.query,
-            kind: spoken.kind,
-          },
+          parameters: { query: spoken.query, kind: "file" },
         },
         "Ищу и открываю " + spoken.query,
+      );
+    if (
+      opening &&
+      spoken?.query &&
+      (spoken.kind === "folder" || knownFolderPath(spoken.query))
+    )
+      return execute(
+        {
+          action: "open_named_item",
+          parameters: { query: spoken.query, kind: "folder" },
+        },
+        "Ищу и открываю " + spoken.query,
+      );
+    if (opening && spoken?.query)
+      return execute(
+        { action: "open_application", parameters: { query: spoken.query } },
+        "Открываю " + spoken.query,
       );
     return {
       type: "clarification",

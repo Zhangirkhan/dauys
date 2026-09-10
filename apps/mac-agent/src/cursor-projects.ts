@@ -1,4 +1,3 @@
-import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -85,11 +84,6 @@ export function parseFolderUri(uri: string): CursorProject | undefined {
 }
 
 export function cursorStatePath() {
-  if (process.platform === "win32") {
-    const appData =
-      process.env.APPDATA ?? join(homedir(), "AppData", "Roaming");
-    return join(appData, "Cursor", "User", "globalStorage", "state.vscdb");
-  }
   return join(
     homedir(),
     "Library/Application Support/Cursor/User/globalStorage/state.vscdb",
@@ -130,18 +124,10 @@ export function readCursorHistory(dbPath = cursorStatePath()) {
 }
 
 export async function readWorkspaceStorage() {
-  const root =
-    process.platform === "win32"
-      ? join(
-          process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"),
-          "Cursor",
-          "User",
-          "workspaceStorage",
-        )
-      : join(
-          homedir(),
-          "Library/Application Support/Cursor/User/workspaceStorage",
-        );
+  const root = join(
+    homedir(),
+    "Library/Application Support/Cursor/User/workspaceStorage",
+  );
   const out: CursorProject[] = [];
   let dirs: string[];
   try {
@@ -183,7 +169,7 @@ export async function scanLocalProjects(roots: string[], maxDepth = 4) {
     }
     const names = new Set(entries.map((e) => e.name));
     if (depth > 0 && (await looksLikeProject(dir, names))) {
-      const uri = pathToFileURL(dir).href;
+      const uri = "file://" + encodeURI(dir);
       found.set(dir, {
         key: projectKey(uri),
         name: basename(dir),
