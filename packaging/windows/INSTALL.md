@@ -21,6 +21,10 @@ pnpm build:agent:windows-installer
 Нужны Node 24+, pnpm 11 и [Inno Setup 6](https://jrsoftware.org/isdl.php).  
 Подпись: `packaging/windows/SIGNING.md`.
 
+Перед заменой `bin\dauys-agent.exe` установщик сам останавливает агент/tray
+текущего пользователя и чинит ACL только у `bin` и `helpers` (без прав администратора).
+Token / trust / ledger не ослабляются.
+
 ---
 
 ## Для разработчиков

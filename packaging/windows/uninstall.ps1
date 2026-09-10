@@ -11,10 +11,12 @@ if (-not (Test-Path -LiteralPath $aclLib)) {
 
 try {
   Stop-DauysAgentProcess
+  Start-Sleep -Milliseconds 400
+  Stop-DauysAgentProcess
 
-  $root = Join-Path $env:LOCALAPPDATA 'DauysAgent'
+  $root = Get-DauysAgentRoot
   if (Test-Path -LiteralPath $root) {
-    # Восстановить доступ к helpers/bin перед удалением (старые ACL)
+    # Восстановить доступ к bin/helpers и при purge — к данным текущего пользователя
     Repair-DauysAgentTreeAcl -Root $root
   }
 
@@ -28,6 +30,10 @@ try {
   if (Test-Path -LiteralPath $bin) {
     Remove-Item -LiteralPath $bin -Recurse -Force
   }
+  $helpers = Join-Path $root 'helpers'
+  if (Test-Path -LiteralPath $helpers) {
+    Remove-Item -LiteralPath $helpers -Recurse -Force
+  }
 
   if ($Purge) {
     if (Test-Path -LiteralPath $root) {
@@ -38,6 +44,6 @@ try {
     Write-Host 'Бинарник и автозапуск удалены. Данные: %LOCALAPPDATA%\DauysAgent (добавьте -Purge чтобы стереть).'
   }
 } catch {
-  Write-Error ("Удаление DauysAgent не выполнено: {0}. Если helpers недоступны — запустите install.ps1 (он чинит ACL) или вручную icacls для текущего пользователя, затем повторите uninstall.ps1 -Purge." -f $_.Exception.Message)
+  Write-Error ("Удаление DauysAgent не выполнено: {0}. Если helpers недоступны — запустите Prepare-DauysUpgrade.ps1 или install.ps1 (чинит ACL bin), затем повторите uninstall.ps1 -Purge." -f $_.Exception.Message)
   exit 1
 }

@@ -226,7 +226,12 @@ if (target === "macos") {
     "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
     "--overwrite",
   ]);
-  for (const name of ["install.ps1", "uninstall.ps1", "DauysAcl.ps1"]) {
+  for (const name of [
+    "install.ps1",
+    "uninstall.ps1",
+    "DauysAcl.ps1",
+    "Prepare-DauysUpgrade.ps1",
+  ]) {
     copyFileSync(
       join(root, "packaging/windows", name),
       join(outDir, name),

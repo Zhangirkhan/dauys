@@ -38,6 +38,31 @@ pnpm build:agent:windows-installer
 # → dist\windows-installer\DauysSetup-x64.exe
 ```
 
+### Обновление поверх старой установки (исправление DeleteFile код 5)
+
+Установщик перед копированием `bin\dauys-agent.exe`:
+
+1. Останавливает только процессы Dauys **текущей сессии** (`dauys-agent`, tray `powershell` с `tray-host.ps1`, `wscript` с `dauys-launch.vbs`).
+2. Чинит ACL **только** у `%LOCALAPPDATA%\DauysAgent\bin` и `helpers` (миграция со старых ACL).
+3. **Не** меняет ACL token / trust / ledger.
+4. Проверяет, что exe можно переименовать; иначе показывает понятную ошибку (не «пропускает файл»).
+
+Пересборка после получения оверлея или нового ZIP:
+
+```powershell
+cd C:\src\dauys-agent   # путь к исходникам на Windows
+pnpm install
+pnpm build:agent:windows-installer
+# Готово: dist\windows-installer\DauysSetup-x64.exe
+```
+
+Если старый Setup всё ещё ругается на код 5 — один раз вручную:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\Prepare-DauysUpgrade.ps1
+# затем снова новый DauysSetup-x64.exe
+```
+
 Альтернатива для разработчиков:
 
 ```powershell

@@ -19,6 +19,7 @@
     "build:agent:windows-installer": "node scripts/build-windows-installer.mjs",
     "pack:windows-kit": "node scripts/prepare-windows-kit.mjs",
     "pack:windows-transfer": "node scripts/pack-windows-transfer.mjs",
+    "pack:windows-upgrade-overlay": "node scripts/pack-windows-upgrade-overlay.mjs",
     "start": "node scripts/dev.mjs --production",
     "test": "vitest run",
     "test:browser": "playwright test",

@@ -174,6 +174,7 @@ const required = [
   "packaging/windows/install.ps1",
   "packaging/windows/uninstall.ps1",
   "packaging/windows/DauysAcl.ps1",
+  "packaging/windows/Prepare-DauysUpgrade.ps1",
   "packaging/windows/dauys-setup.iss",
   "packaging/windows/dauys-launch.vbs.template",
   "packaging/windows/BUILD-ON-WINDOWS.md",

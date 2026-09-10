@@ -26,9 +26,11 @@ for (const name of [
   "INSTALL.md",
   "BUILD-ON-WINDOWS.md",
   "DauysAcl.ps1",
+  "Prepare-DauysUpgrade.ps1",
   "SIGNING.md",
   "dauys-setup.iss",
   "dauys-launch.vbs.template",
+  "VM-CHECKLIST.md",
 ]) {
   const src = join(packaging, name);
   if (existsSync(src)) copyFileSync(src, join(outDir, name));

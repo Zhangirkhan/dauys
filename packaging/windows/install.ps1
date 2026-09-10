@@ -14,17 +14,13 @@ if (-not (Test-Path -LiteralPath $exe)) {
 }
 
 try {
-  Stop-DauysAgentProcess
+  # Остановка агента/tray + ACL только bin/helpers; проверка, что exe можно заменить
+  Invoke-DauysUpgradePrepare
 
-  $root = Join-Path $env:LOCALAPPDATA 'DauysAgent'
+  $root = Get-DauysAgentRoot
   $destDir = Join-Path $root 'bin'
   New-Item -ItemType Directory -Force -Path $destDir | Out-Null
-
-  # Сначала чиним ACL от прежних версий (helpers/bin), только внутри DauysAgent
-  Repair-DauysAgentTreeAcl -Root $root
-
-  Grant-DauysCurrentUserFullControl -Path $root -InheritToChildren
-  Grant-DauysCurrentUserFullControl -Path $destDir -InheritToChildren
+  Repair-DauysBinAcl -Root $root
 
   $dest = Join-Path $destDir 'dauys-agent.exe'
   Copy-Item -LiteralPath $exe -Destination $dest -Force
@@ -32,6 +28,15 @@ try {
 
   if (-not (Test-Path -LiteralPath $dest)) {
     throw "После копирования файл недоступен: $dest"
+  }
+
+  $helpersDir = Join-Path $root 'helpers'
+  New-Item -ItemType Directory -Force -Path $helpersDir | Out-Null
+  foreach ($name in @('DauysAcl.ps1', 'Prepare-DauysUpgrade.ps1')) {
+    $src = Join-Path $here $name
+    if (Test-Path -LiteralPath $src) {
+      Copy-Item -LiteralPath $src -Destination (Join-Path $helpersDir $name) -Force
+    }
   }
 
   $vbs = Join-Path $destDir 'dauys-launch.vbs'
