@@ -4,7 +4,11 @@ import type {
 } from "../../../packages/shared/src/index.js";
 import { execute } from "./intent.js";
 import { extractSpokenUrl } from "./spoken-url.js";
-import { mentionsDrive } from "../../../packages/shared/src/index.js";
+import {
+  extractNewOfficeDocument,
+  mentionsDrive,
+  officeAppQuery,
+} from "../../../packages/shared/src/index.js";
 
 const normalize = (s: string) =>
   s
@@ -19,7 +23,21 @@ export type SpokenItem = {
 };
 
 const OPEN =
-  /^(?:открой|открыть|открою|откроем|откройте|покажи|найди|найти)(?:те)? /u;
+  /^(?:открой|открыть|открою|откроем|откройте|покажи|найди|найти|запусти|запустить|включи|вытащи|вытащу|вытяну)(?:те)? /u;
+const DOCUMENT =
+  /(?:таблиц\p{L}*|эксел\p{L}*|аксел\p{L}*|акцел\p{L}*|excel|xlsx?|ворд|word|docx?|пдф|pdf|презентац\p{L}*|pptx?)/u;
+const APP_DOC =
+  /^(?:майкрософт )?(?:эксел\p{L}*|аксел\p{L}*|акцел\p{L}*|excel|ворд\p{L}*|word)$/u;
+
+function stripDocumentHints(q: string) {
+  return q
+    .replace(
+      /(?:^| )(?:таблиц\p{L}*|эксел\p{L}*|аксел\p{L}*|акцел\p{L}*|excel|xlsx?|ворд|word|docx?|пдф|pdf|презентац\p{L}*|pptx?)(?= |$)/gu,
+      " ",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
 const NEW_EDITOR =
   /(?:создай|открой|открыть|открою|откроем|откройте).{0,30}нов(?:ый|ое|ую)|нов(?:ый|ое|ую) (?:проект|окно)|пуст(?:ое|ой|ую) (?:окно|проект)|new (?:project|window)/u;
 
@@ -66,6 +84,13 @@ export function extractSpokenItem(text: string): SpokenItem | undefined {
   if (!query || /^(его|ее|это|этот|тот|последний)$/.test(query))
     return undefined;
   if (/^(проект[аеу]?|в курсоре|в cursor)$/.test(query)) return undefined;
+  if (DOCUMENT.test(query)) {
+    const named = stripDocumentHints(query);
+    if (named && !/^(его|ее|это|этот|тот|последний)$/.test(named))
+      return { query: named, kind: "file" };
+    if (APP_DOC.test(query)) return { query, kind: "any" };
+    return undefined;
+  }
   return { query, kind: "any" };
 }
 
@@ -129,6 +154,21 @@ export function preferSpokenNamedItem(
   registry: Registry,
   decision: AssistantDecision,
 ): AssistantDecision {
+  const officeNew = extractNewOfficeDocument(text);
+  if (officeNew)
+    return execute(
+      {
+        action: "open_application",
+        parameters: {
+          query: officeAppQuery(officeNew.kind),
+          newDocument: true,
+          ...(officeNew.title ? { title: officeNew.title } : {}),
+        },
+      },
+      officeNew.kind === "excel"
+        ? "Создаю новую таблицу в Excel"
+        : "Создаю новый документ Word",
+    );
   const editor = editorFromText(text, registry);
   if (NEW_EDITOR.test(normalize(text)) && editor)
     return execute(

@@ -10,7 +10,15 @@ test("production manifest, service worker and offline shell", async ({
     return response.json();
   });
   expect(manifest.display).toBe("standalone");
-  expect(manifest.icons).toHaveLength(2);
+  expect(manifest.icons.length).toBeGreaterThanOrEqual(2);
+  expect(
+    manifest.icons.some((icon: { sizes: string }) => icon.sizes === "192x192"),
+  ).toBe(true);
+  expect(
+    manifest.icons.some((icon: { sizes: string }) => icon.sizes === "512x512"),
+  ).toBe(true);
+  const icon = await page.request.get("/icon-192.png");
+  expect(icon.headers()["content-type"]).toContain("image/png");
   await page.evaluate(async () => {
     await navigator.serviceWorker.ready;
   });
@@ -32,5 +40,8 @@ test("production manifest, service worker and offline shell", async ({
   await page.reload();
   await expect(
     page.getByRole("button", { name: /Записать команду|Подключить/ }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Скачать приложение" }),
   ).toBeVisible();
 });

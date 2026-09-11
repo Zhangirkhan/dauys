@@ -61,6 +61,7 @@ export class AgentClient {
             .parse(JSON.parse(raw.toString()));
           id = z.object({ id: z.string().uuid() }).parse(msg.envelope).id;
           const e = this.o.ledger.claim(msg.envelope);
+          this.o.logger.info({ action: e.command.action }, "Выполняю команду");
           const result = await this.o.executor.execute(
             e.command,
             e.registry,

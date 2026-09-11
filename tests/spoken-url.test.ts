@@ -82,6 +82,20 @@ describe("spoken web addresses", () => {
       applicationId: "chrome",
     });
   });
+  it("does not steal a drive file search into a website", () => {
+    const rewritten = preferSpokenUrl(
+      "Открой с диска файл отчет коктем",
+      registry,
+      execute(
+        {
+          action: "search_drive",
+          parameters: { query: "отчет коктем", open: true },
+        },
+        "Ищу на диске: отчет коктем",
+      ),
+    );
+    expect(rewritten.type === "execute" && rewritten.action).toBe("search_drive");
+  });
   it("does not treat a spoken site as a folder name", () => {
     expect(extractSpokenItem("Открой в хроме сайт егов.кз")).toBeUndefined();
   });

@@ -115,7 +115,7 @@ async function main() {
       .concat(env.ALLOWED_DIRECTORIES ? [] : defaultAllowedDirectories()),
     trust,
     dataDir: dirname(tokenPath),
-    driveUrl: env.DRIVE_MCP_URL,
+    driveUrl: env.DRIVE_MCP_URL ?? "https://drive.esl.kz/mcp",
     driveToken:
       env.DRIVE_MCP_TOKEN ??
       (await readFile(resolve(dirname(tokenPath), "drive-mcp.token"), "utf8")

@@ -195,6 +195,14 @@ export async function createApp(o: AppOptions) {
     switch (command.action) {
       case "open_application":
       case "close_application":
+        if (
+          command.parameters.applicationId &&
+          !registry.applications.some(
+            (a) => a.id === command.parameters.applicationId,
+          )
+        )
+          throw new Error("Приложение отсутствует в реестре");
+        break;
       case "new_browser_tab":
         if (
           !registry.applications.some(
@@ -243,7 +251,7 @@ export async function createApp(o: AppOptions) {
     }
     const ws = agents.get(c.agentId);
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-        fail(c, "MacBook не подключён. Запустите агент Рядом на Mac.");
+      fail(c, "MacBook не подключён. Запустите агент Рядом на Mac.");
       return;
     }
     c.status = "executing";
@@ -367,16 +375,27 @@ export async function createApp(o: AppOptions) {
       return;
     }
     c.result = result;
-    if (result.success && c.command?.action === "search_files") {
+    if (
+      result.success &&
+      (c.command?.action === "search_files" ||
+        c.command?.action === "search_drive")
+    ) {
       const ctx = o.store.context(c.agentId);
       ctx.searchResults = result.files ?? [];
-      if (result.files?.length === 1) ctx.lastFile = result.files[0].path;
+      if (
+        result.files?.length === 1 &&
+        result.files[0].kind !== "drive" &&
+        result.files[0].path.startsWith("/")
+      )
+        ctx.lastFile = result.files[0].path;
       o.store.saveContext(c.agentId, ctx);
     }
     if (
       result.success &&
       (c.command?.action === "open_named_item" ||
-        c.command?.action === "open_editor_project") &&
+        c.command?.action === "open_editor_project" ||
+        c.command?.action === "open_application" ||
+        c.command?.action === "close_application") &&
       result.files &&
       result.files.length > 1
     ) {
@@ -396,7 +415,12 @@ export async function createApp(o: AppOptions) {
       result.files?.length
     ) {
       c.files = result.files;
-      if (result.files.length === 1 && result.files[0].url) {
+      if (
+        result.files.length === 1 &&
+        result.files[0].url &&
+        result.files[0].kind !== "folder" &&
+        result.files[0].kind !== "file"
+      ) {
         c.command = {
           action: "open_url",
           parameters: {
@@ -580,27 +604,47 @@ export async function createApp(o: AppOptions) {
         save(c);
         return;
       }
+      const driveId = Number(f.id);
       c.command =
-        f.kind === "drive" && f.url
+        c.command?.action === "close_application" && f.kind === "app"
           ? {
-              action: "open_url",
-              parameters: {
-                url: f.url,
-                applicationId: o.registry
-                  .get()
-                  .applications.some((a) => a.id === "chrome")
-                  ? "chrome"
-                  : undefined,
-              },
+              action: "close_application",
+              parameters: { query: f.name },
             }
-          : f.kind === "project"
-          ? {
-              action: "open_editor_project",
-              parameters: { query: f.name, projectKey: f.id },
-            }
-          : f.kind === "folder"
-            ? { action: "open_folder", parameters: { path: f.path } }
-            : { action: "open_file", parameters: { path: f.path } };
+          : f.kind === "app"
+            ? {
+                action: "open_application",
+                parameters: { query: f.name },
+              }
+            : f.kind === "drive" && Number.isInteger(driveId) && driveId > 0
+              ? {
+                  action: "search_drive",
+                  parameters: {
+                    query: f.name,
+                    open: true,
+                    fileId: driveId,
+                  },
+                }
+              : f.kind === "drive" && f.url
+                ? {
+                    action: "open_url",
+                    parameters: {
+                      url: f.url,
+                      applicationId: o.registry
+                        .get()
+                        .applications.some((a) => a.id === "chrome")
+                        ? "chrome"
+                        : undefined,
+                    },
+                  }
+                : f.kind === "project"
+                  ? {
+                      action: "open_editor_project",
+                      parameters: { query: f.name, projectKey: f.id },
+                    }
+                  : f.kind === "folder"
+                    ? { action: "open_folder", parameters: { path: f.path } }
+                    : { action: "open_file", parameters: { path: f.path } };
       c.confirmed = false;
       dispatch(c);
       return;
@@ -893,6 +937,10 @@ export async function createApp(o: AppOptions) {
     await app.register(fastifyStatic, {
       root: resolve(o.staticDir),
       maxAge: 0,
+      setHeaders(res, filePath) {
+        if (/(?:index\.html|sw\.js|manifest\.webmanifest)$/.test(filePath))
+          res.setHeader("Cache-Control", "no-store");
+      },
     });
     app.setNotFoundHandler((req, reply) => {
       if (req.url.startsWith("/api/") || req.url.startsWith("/ws/"))

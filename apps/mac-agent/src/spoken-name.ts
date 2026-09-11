@@ -200,6 +200,20 @@ const TECH: Record<string, string> = {
   эйай: "ai",
   аи: "ai",
   апи: "api",
+  энерджи: "energy",
+  енерджи: "energy",
+  энержи: "energy",
+  енержи: "energy",
+  energy: "energy",
+  плюс: "plus",
+  plus: "plus",
+  ватсап: "whatsapp",
+  ватсапп: "whatsapp",
+  вотсап: "whatsapp",
+  вотсапп: "whatsapp",
+  вацап: "whatsapp",
+  вацапп: "whatsapp",
+  whatsapp: "whatsapp",
   эскуэль: "sql",
   сиэсэс: "css",
   джаваскрипт: "js",
@@ -221,6 +235,7 @@ export function phoneticLatin(s: string) {
     .replace(/th/g, "t")
     .replace(/qu/g, "kv")
     .replace(/x/g, "ks")
+    .replace(/wh/g, "v")
     .replace(/w/g, "v")
     .replace(/c/g, "k")
     .replace(/y/g, "i")
@@ -272,8 +287,16 @@ function expandSpokenWords(s: string) {
     .join(" ");
 }
 
+function applyTechAliases(s: string) {
+  return s
+    .split(" ")
+    .filter(Boolean)
+    .map((token) => TECH[token] ?? token)
+    .join(" ");
+}
+
 export function coreSpokenName(s: string) {
-  const n = expandSpokenNumbers(s);
+  const n = applyTechAliases(expandSpokenNumbers(s));
   const stripped = n.replace(KIND_PREFIX, "").trim();
   return stripped || n;
 }
@@ -295,7 +318,9 @@ export function spokenNameVariants(query: string, kind: NamedKind = "any") {
   const words = expandSpokenWords(base);
   const variants = new Set<string>([base, numbered, words].filter(Boolean));
   for (const current of [...variants]) {
-    const latin = translitCyrillic(current);
+    const tech = applyTechAliases(current);
+    if (tech) variants.add(tech);
+    const latin = translitCyrillic(tech || current);
     if (latin !== current) variants.add(latin);
   }
   for (const prefix of kindPrefixes(kind)) {

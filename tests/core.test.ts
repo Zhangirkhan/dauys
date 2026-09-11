@@ -115,7 +115,7 @@ describe("strict shared schemas", () => {
         action: "close_application",
         parameters: { applicationId: "cursor" },
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(requiresConfirmation(envelope().command)).toBe(false);
   });
   it("retries one malformed DeepSeek output and validates corrected JSON", async () => {

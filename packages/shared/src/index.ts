@@ -36,16 +36,33 @@ export const actionSchema = z.discriminatedUnion("action", [
       action: z.literal("open_application"),
       parameters: z
         .object({
-          applicationId: idSchema,
+          applicationId: idSchema.optional(),
+          query: z.string().trim().min(1).max(200).optional(),
           newWindow: z.boolean().optional(),
+          newDocument: z.boolean().optional(),
+          title: z.string().trim().min(1).max(80).optional(),
         })
-        .strict(),
+        .strict()
+        .refine(
+          (v) => !!v.applicationId || !!v.query,
+          "Нужен идентификатор или название программы",
+        ),
     })
     .strict(),
   z
     .object({
       action: z.literal("close_application"),
-      parameters: z.object({ applicationId: idSchema }).strict(),
+      parameters: z
+        .object({
+          applicationId: idSchema.optional(),
+          query: z.string().trim().min(1).max(200).optional(),
+          documentOnly: z.boolean().optional(),
+        })
+        .strict()
+        .refine(
+          (v) => !!v.applicationId || !!v.query,
+          "Нужен идентификатор или название программы",
+        ),
     })
     .strict(),
   z
@@ -72,7 +89,9 @@ export const actionSchema = z.discriminatedUnion("action", [
             .string()
             .regex(/^[a-zA-Z0-9]{1,12}$/)
             .optional(),
-          kind: z.enum(["pdf", "presentation"]).optional(),
+          kind: z
+            .enum(["pdf", "presentation", "spreadsheet", "document"])
+            .optional(),
           modifiedAfter: z.string().datetime().optional(),
           latest: z.boolean().default(false),
           open: z.boolean().default(true),
@@ -285,7 +304,6 @@ export const trustSchema = z
 export type Trust = z.infer<typeof trustSchema>;
 export function requiresConfirmation(action: Action): boolean {
   return [
-    "close_application",
     "lock_screen",
     "run_scenario",
     "run_shortcut",
@@ -299,7 +317,7 @@ export const fileSchema = z
     name: z.string(),
     path: safePathSchema,
     modifiedAt: z.string(),
-    kind: z.enum(["file", "folder", "project", "drive"]).optional(),
+    kind: z.enum(["file", "folder", "project", "drive", "app"]).optional(),
     host: z.string().max(120).optional(),
     url: safeUrlSchema.optional(),
   })
@@ -364,6 +382,18 @@ export type CommandRecord = {
 };
 export {
   compileDriveQuery,
+  driveSearchVariants,
   extractSpokenDrive,
   mentionsDrive,
+  pickDriveHit,
+  scoreDriveName,
 } from "./drive-query.js";
+export {
+  extractCloseOffice,
+  extractNewOfficeDocument,
+  isOfficeAppName,
+  officeAppQuery,
+  officeKindForExtension,
+  spokenOfficeKind,
+  type OfficeKind,
+} from "./office.js";

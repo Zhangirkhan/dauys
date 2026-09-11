@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 
-test("single-button interface records and executes without extra taps", async ({
+test("single-button interface records until stop then executes", async ({
   page,
   request,
 }) => {
@@ -26,9 +26,10 @@ test("single-button interface records and executes without extra taps", async ({
   await expect(page.locator("main button")).toHaveCount(1);
   await expect(page.locator("main")).not.toContainText(/./);
   await record.click();
-  await expect(
-    page.getByRole("button", { name: "Остановить запись" }),
-  ).toBeVisible();
+  const stop = page.getByRole("button", { name: "Остановить запись" });
+  await expect(stop).toBeVisible();
+  await page.waitForTimeout(800);
+  await stop.click();
   await expect(record).toBeVisible({ timeout: 25_000 });
   await page.waitForFunction(async () => {
     const body = await fetch("/api/history").then((response) =>
@@ -36,4 +37,5 @@ test("single-button interface records and executes without extra taps", async ({
     );
     return body.data?.[0]?.status === "done";
   });
+  await expect(page.locator(".session-history li")).toHaveCount(1);
 });
