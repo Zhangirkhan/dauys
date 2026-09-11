@@ -1,0 +1,42 @@
+{
+  "projects": [
+    {
+      "id": "my-project",
+      "name": "Мой проект",
+      "description": "Пример проекта на Windows",
+      "aliases": ["мой проект", "project"],
+      "path": "C:/Users/USERNAME/Documents/Projects/my-project",
+      "defaultApplication": "Cursor",
+      "urls": {
+        "local": "http://localhost:3000"
+      },
+      "scenarios": {}
+    }
+  ],
+  "applications": [
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "aliases": ["курсор", "редактор"],
+      "path": "C:/Users/USERNAME/AppData/Local/Programs/cursor/Cursor.exe"
+    },
+    {
+      "id": "chrome",
+      "name": "Google Chrome",
+      "aliases": ["хром", "chrome"],
+      "path": "C:/Program Files/Google/Chrome/Application/chrome.exe"
+    },
+    {
+      "id": "telegram",
+      "name": "Telegram",
+      "aliases": ["телега", "тг"],
+      "path": "C:/Users/USERNAME/AppData/Roaming/Telegram Desktop/Telegram.exe"
+    },
+    {
+      "id": "explorer",
+      "name": "Explorer",
+      "aliases": ["проводник", "explorer"],
+      "path": "C:/Windows/explorer.exe"
+    }
+  ]
+}
