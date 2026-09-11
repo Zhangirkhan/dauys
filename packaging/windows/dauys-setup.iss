@@ -50,10 +50,12 @@ Name: "autostart"; Description: "Запускать Dauys при входе в W
 Name: "desktopicon"; Description: "Ярлык на рабочем столе"; Flags: unchecked
 
 [Files]
-; Подготовка обновления: остановить агент + ACL bin/helpers (не копируется в {app})
-Source: "DauysAcl.ps1"; Flags: dontcopy noencryption
-Source: "Prepare-DauysUpgrade.ps1"; Flags: dontcopy noencryption
-Source: "{#SourceAgentDir}\dauys-agent.exe"; DestDir: "{app}\bin"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Embedded for ExtractTemporaryFile (PrepareToInstall / BeforeInstall). solidbreak: надёжный extract из solid archive.
+Source: "DauysAcl.ps1"; Flags: dontcopy noencryption solidbreak
+Source: "Prepare-DauysUpgrade.ps1"; Flags: dontcopy noencryption solidbreak
+; BeforeInstall: подготовка непосредственно перед этим файлом (после CloseApplications в PerformInstall).
+; overwritereadonly: снять R атрибут до DeleteFile. Старый exe удаляет PrepareUpgrade (реальный DeleteFile).
+Source: "{#SourceAgentDir}\dauys-agent.exe"; DestDir: "{app}\bin"; Flags: ignoreversion overwritereadonly; BeforeInstall: PrepareUpgradeOrFail
 Source: "{#SourceAgentDir}\DauysAcl.ps1"; DestDir: "{app}\helpers"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "Prepare-DauysUpgrade.ps1"; DestDir: "{app}\helpers"; Flags: ignoreversion
 
@@ -71,11 +73,13 @@ var
   ResultCode: Integer;
   Params: string;
   AppRoot: string;
+  LogHint: string;
 begin
   Result := False;
   ExtractTemporaryFile('DauysAcl.ps1');
   ExtractTemporaryFile('Prepare-DauysUpgrade.ps1');
   AppRoot := ExpandConstant('{app}');
+  LogHint := ExpandConstant('{localappdata}\DauysAgent\upgrade-prepare.log');
   Params :=
     '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
     ExpandConstant('{tmp}\Prepare-DauysUpgrade.ps1') +
@@ -91,7 +95,8 @@ begin
   begin
     MsgBox(
       'Не удалось запустить подготовку обновления Dauys.' + #13#10 +
-      'Права администратора не нужны. Повторите установку.',
+      'Права администратора не нужны. Повторите установку.' + #13#10#13#10 +
+      'Журнал: ' + LogHint,
       mbError,
       MB_OK
     );
@@ -105,7 +110,8 @@ begin
       '2. Подождите несколько секунд.' + #13#10 +
       '3. Снова запустите этот установщик (без прав администратора).' + #13#10#13#10 +
       'Если ошибка повторяется: Параметры → Приложения → Dauys → Удалить' + #13#10 +
-      '(можно сохранить настройки), затем установите заново.',
+      '(можно сохранить настройки), затем установите заново.' + #13#10#13#10 +
+      'Журнал (без секретов): ' + LogHint,
       mbError,
       MB_OK
     );
@@ -114,14 +120,26 @@ begin
   Result := True;
 end;
 
+procedure PrepareUpgradeOrFail;
+begin
+  { Вызывается BeforeInstall для bin\dauys-agent.exe — сразу перед копированием файла. }
+  if not PrepareUpgrade() then
+    RaiseException(
+      'Не удалось подготовить замену dauys-agent.exe. ' +
+      'Закройте Dauys из трея и повторите. Журнал: %LOCALAPPDATA%\DauysAgent\upgrade-prepare.log'
+    );
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  { До CloseApplications / [Files]. Ранний проход + журнал. }
   NeedsRestart := False;
   Result := '';
   if not PrepareUpgrade() then
     Result :=
       'Обновление отменено: файл dauys-agent.exe занят или недоступен.' + #13#10 +
-      'Закройте Dauys из трея и повторите установку.';
+      'Закройте Dauys из трея и повторите установку.' + #13#10 +
+      'Журнал: %LOCALAPPDATA%\DauysAgent\upgrade-prepare.log';
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -130,7 +148,7 @@ var
 begin
   if CurStep = ssInstall then
   begin
-    { Повторная подготовка непосредственно перед копированием файлов }
+    { После старта install-фазы, до/около CloseApplications; финальный BeforeInstall ещё раз. }
     if not PrepareUpgrade() then
       RaiseException(
         'Не удалось подготовить замену dauys-agent.exe. Закройте Dauys из трея и повторите.'

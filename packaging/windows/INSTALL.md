@@ -22,8 +22,9 @@ pnpm build:agent:windows-installer
 Подпись: `packaging/windows/SIGNING.md`.
 
 Перед заменой `bin\dauys-agent.exe` установщик сам останавливает агент/tray
-текущего пользователя и чинит ACL только у `bin` и `helpers` (без прав администратора).
-Token / trust / ledger не ослабляются.
+текущего пользователя, чинит ACL только у `bin` и `helpers`, и удаляет старый exe
+(реальный DeleteFile — не rename-probe). Token / trust / ledger не ослабляются.
+Журнал: `%LOCALAPPDATA%\DauysAgent\upgrade-prepare.log`.
 
 ---
 

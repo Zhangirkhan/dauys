@@ -40,12 +40,18 @@ pnpm build:agent:windows-installer
 
 ### Обновление поверх старой установки (исправление DeleteFile код 5)
 
-Установщик перед копированием `bin\dauys-agent.exe`:
+**Причина (доказано по коду Inno + Windows):** probe через `Move-Item` (rename) был ложным.
+Windows часто позволяет **переименовать** занятый/mapped `.exe`, но `DeleteFile` (именно его вызывает Inno
+при замене файла) даёт **код 5**. После `f587ce0` подготовка «успевала», а Setup всё равно падал на DeleteFile.
+Дополнительно ACL-repair на exe глотал ошибки (`catch {}` + `icacls /C` с кодом 1 = «успех»).
 
-1. Останавливает только процессы Dauys **текущей сессии** (`dauys-agent`, tray `powershell` с `tray-host.ps1`, `wscript` с `dauys-launch.vbs`).
-2. Чинит ACL **только** у `%LOCALAPPDATA%\DauysAgent\bin` и `helpers` (миграция со старых ACL).
+Установщик перед копированием `bin\dauys-agent.exe` (PrepareToInstall → ssInstall → BeforeInstall):
+
+1. Останавливает только процессы Dauys **текущей сессии** (`dauys-agent`, tray, `dauys-launch.vbs`).
+2. Чинит ACL **только** у `%LOCALAPPDATA%\DauysAgent\bin` и `helpers` (миграция со старых ACL); ошибки на exe не глотаются.
 3. **Не** меняет ACL token / trust / ledger.
-4. Проверяет, что exe можно переименовать; иначе показывает понятную ошибку (не «пропускает файл»).
+4. Снимает readonly и **удаляет** старый exe (реальный DeleteFile). Rename без успешного delete = провал.
+5. Журнал без секретов: `%LOCALAPPDATA%\DauysAgent\upgrade-prepare.log` (маркер `UPGRADE_PREPARE_V2`).
 
 Пересборка после получения оверлея или нового ZIP:
 
