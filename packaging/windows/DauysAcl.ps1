@@ -165,18 +165,26 @@ function Get-DauysUpgradeLogPath {
 
 <#
   Журнал подготовки обновления без секретов (нет token/trust/ledger).
+  Пишет в %LOCALAPPDATA%\DauysAgent\upgrade-prepare.log и опционально в
+  $script:DauysUpgradeLogOverride (Inno {tmp}\dauys-upgrade-prepare.log).
 #>
 function Write-DauysUpgradeLog {
   param([Parameter(Mandatory = $true)][string]$Message)
   $line = '{0} {1}' -f ([DateTime]::UtcNow.ToString('o')), $Message
-  try {
-    $root = Get-DauysAgentRoot
-    if (-not (Test-Path -LiteralPath $root)) {
-      New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $targets = @((Get-DauysUpgradeLogPath))
+  if ($script:DauysUpgradeLogOverride) {
+    $targets = @($script:DauysUpgradeLogOverride) + $targets
+  }
+  foreach ($path in $targets) {
+    try {
+      $dir = Split-Path -Parent $path
+      if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+      }
+      Add-Content -LiteralPath $path -Value $line -Encoding UTF8
+    } catch {
+      [Console]::Error.WriteLine(("upgrade_log_fail path={0} err={1}" -f $path, $_.Exception.Message))
     }
-    Add-Content -LiteralPath (Get-DauysUpgradeLogPath) -Value $line -Encoding UTF8
-  } catch {
-    # Журнал не должен ломать подготовку
   }
   Write-Output $line
 }

@@ -1,5 +1,8 @@
 ; Dauys Windows agent — per-user installer (no admin)
 ; Built by: pnpm build:agent:windows-installer
+;
+; Upgrade scripts: ONLY via DestDir "dauys-upgrade" + Flags dontcopy + ExtractTemporaryFiles.
+; Duplicate basename with {app}\helpers is OK — ExtractTemporaryFiles('dauys-upgrade\*') is unambiguous.
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.1.0"
@@ -28,8 +31,13 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\..\dist\windows-installer
 OutputBaseFilename=DauysSetup-x64
+#ifdef DauysVerifyPlain
+Compression=none
+SolidCompression=no
+#else
 Compression=lzma2
 SolidCompression=yes
+#endif
 WizardStyle=modern
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\bin\{#MyAppExeName}
@@ -50,13 +58,14 @@ Name: "autostart"; Description: "Запускать Dauys при входе в W
 Name: "desktopicon"; Description: "Ярлык на рабочем столе"; Flags: unchecked
 
 [Files]
-; Embedded for ExtractTemporaryFile (PrepareToInstall / BeforeInstall). solidbreak: надёжный extract из solid archive.
-Source: "DauysAcl.ps1"; Flags: dontcopy noencryption solidbreak
-Source: "Prepare-DauysUpgrade.ps1"; Flags: dontcopy noencryption solidbreak
-; BeforeInstall: подготовка непосредственно перед этим файлом (после CloseApplications в PerformInstall).
-; overwritereadonly: снять R атрибут до DeleteFile. Старый exe удаляет PrepareUpgrade (реальный DeleteFile).
+; --- MUST be first (solid compression): ExtractTemporaryFiles before [Files] copy ---
+; DestDir without {tmp}/{app}: extracts to {tmp}\dauys-upgrade\ (see Inno ExtractTemporaryFiles docs)
+Source: "DauysAcl.ps1"; DestDir: "dauys-upgrade"; Flags: dontcopy noencryption solidbreak
+Source: "Prepare-DauysUpgrade.ps1"; DestDir: "dauys-upgrade"; Flags: dontcopy noencryption solidbreak
+; Agent binary — BeforeInstall must succeed before Setup touches this dest (no DeleteFile if prepare aborts)
 Source: "{#SourceAgentDir}\dauys-agent.exe"; DestDir: "{app}\bin"; Flags: ignoreversion overwritereadonly; BeforeInstall: PrepareUpgradeOrFail
-Source: "{#SourceAgentDir}\DauysAcl.ps1"; DestDir: "{app}\helpers"; Flags: ignoreversion skipifsourcedoesntexist
+; Installed copies for manual re-run / uninstall helpers (separate DestDir — not used by ExtractTemporaryFiles)
+Source: "DauysAcl.ps1"; DestDir: "{app}\helpers"; Flags: ignoreversion
 Source: "Prepare-DauysUpgrade.ps1"; DestDir: "{app}\helpers"; Flags: ignoreversion
 
 [Icons]
@@ -68,78 +77,226 @@ Name: "{userstartup}\DauysAgent"; Filename: "{app}\bin\dauys-launch.vbs"; Workin
 Filename: "{app}\bin\dauys-launch.vbs"; Description: "Запустить Dauys"; Flags: nowait postinstall skipifsilent shellexec
 
 [Code]
-function PrepareUpgrade(): Boolean;
+const
+  UpgradeExtractDir = 'dauys-upgrade';
+  UpgradePrepareScript = 'Prepare-DauysUpgrade.ps1';
+  UpgradeAclScript = 'DauysAcl.ps1';
+
 var
-  ResultCode: Integer;
-  Params: string;
-  AppRoot: string;
-  LogHint: string;
+  UpgradePrepareDone: Boolean;
+
+function UpgradeLogPathTmp(): string;
+begin
+  Result := ExpandConstant('{tmp}\dauys-upgrade-prepare.log');
+end;
+
+function UpgradeLogPathApp(): string;
+begin
+  Result := ExpandConstant('{localappdata}\DauysAgent\upgrade-prepare.log');
+end;
+
+procedure AppendUpgradeLog(const Line: string);
+var
+  TmpLog, AppLog, AppDir, Full: string;
+begin
+  Full := GetDateTimeString('yyyy-mm-dd"T"hh:nn:ss', '-', ':') + 'Z inno ' + Line;
+  Log('DauysUpgrade: ' + Line);
+  TmpLog := UpgradeLogPathTmp();
+  if not SaveStringToFile(TmpLog, Full + #13#10, True) then
+    Log('DauysUpgrade: cannot write tmp log: ' + TmpLog);
+  AppDir := ExpandConstant('{localappdata}\DauysAgent');
+  if ForceDirectories(AppDir) then
+  begin
+    AppLog := UpgradeLogPathApp();
+    // Best-effort: root ACL may block; tmp log is authoritative for Setup diagnostics.
+    if not SaveStringToFile(AppLog, Full + #13#10, True) then
+      Log('DauysUpgrade: cannot write app log (ACL?): ' + AppLog);
+  end;
+end;
+
+function UpgradeScriptDir(): string;
+begin
+  Result := ExpandConstant('{tmp}\' + UpgradeExtractDir);
+end;
+
+function UpgradePreparePath(): string;
+begin
+  Result := UpgradeScriptDir() + '\' + UpgradePrepareScript;
+end;
+
+function UpgradeAclPath(): string;
+begin
+  Result := UpgradeScriptDir() + '\' + UpgradeAclScript;
+end;
+
+function ExtractUpgradeScripts(): Boolean;
+var
+  N: Integer;
+  Prep, Acl: string;
+  PrepSize, AclSize: Integer;
 begin
   Result := False;
-  ExtractTemporaryFile('DauysAcl.ps1');
-  ExtractTemporaryFile('Prepare-DauysUpgrade.ps1');
-  AppRoot := ExpandConstant('{app}');
-  LogHint := ExpandConstant('{localappdata}\DauysAgent\upgrade-prepare.log');
-  Params :=
-    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
-    ExpandConstant('{tmp}\Prepare-DauysUpgrade.ps1') +
-    '" -Root "' + AppRoot + '"';
-  if not Exec(
-    ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    Params,
-    ExpandConstant('{tmp}'),
-    SW_HIDE,
-    ewWaitUntilTerminated,
-    ResultCode
-  ) then
-  begin
+  Prep := UpgradePreparePath();
+  Acl := UpgradeAclPath();
+  AppendUpgradeLog('extract_begin pattern=' + UpgradeExtractDir + '\*');
+  try
+    N := ExtractTemporaryFiles(UpgradeExtractDir + '\*');
+  except
+    AppendUpgradeLog('extract_exception=' + GetExceptionMessage);
     MsgBox(
-      'Не удалось запустить подготовку обновления Dauys.' + #13#10 +
-      'Права администратора не нужны. Повторите установку.' + #13#10#13#10 +
-      'Журнал: ' + LogHint,
-      mbError,
-      MB_OK
-    );
+      'Не удалось извлечь скрипты подготовки обновления из установщика.' + #13#10 +
+      'ExtractTemporaryFiles failed.' + #13#10#13#10 +
+      'Журнал: ' + UpgradeLogPathTmp(),
+      mbError, MB_OK);
     exit;
   end;
-  if ResultCode <> 0 then
+  AppendUpgradeLog('extract_count=' + IntToStr(N));
+  if N < 2 then
   begin
+    AppendUpgradeLog('extract_fail reason=count_lt_2');
     MsgBox(
-      'Не удалось освободить файл dauys-agent.exe для обновления.' + #13#10#13#10 +
-      '1. Закройте Dauys через значок в трее (Выйти).' + #13#10 +
-      '2. Подождите несколько секунд.' + #13#10 +
-      '3. Снова запустите этот установщик (без прав администратора).' + #13#10#13#10 +
-      'Если ошибка повторяется: Параметры → Приложения → Dauys → Удалить' + #13#10 +
-      '(можно сохранить настройки), затем установите заново.' + #13#10#13#10 +
-      'Журнал (без секретов): ' + LogHint,
-      mbError,
-      MB_OK
-    );
+      'В установщике нет скриптов dauys-upgrade (ExtractTemporaryFiles вернул ' +
+      IntToStr(N) + ').' + #13#10 +
+      'Пересоберите DauysSetup-x64.exe из ветки Windows.' + #13#10#13#10 +
+      'Журнал: ' + UpgradeLogPathTmp(),
+      mbError, MB_OK);
+    exit;
+  end;
+  if not FileExists(Prep) then
+  begin
+    AppendUpgradeLog('extract_fail missing=' + Prep);
+    MsgBox(
+      'После извлечения нет файла:' + #13#10 + Prep + #13#10#13#10 +
+      'Журнал: ' + UpgradeLogPathTmp(),
+      mbError, MB_OK);
+    exit;
+  end;
+  if not FileExists(Acl) then
+  begin
+    AppendUpgradeLog('extract_fail missing=' + Acl);
+    MsgBox(
+      'После извлечения нет файла:' + #13#10 + Acl + #13#10#13#10 +
+      'Журнал: ' + UpgradeLogPathTmp(),
+      mbError, MB_OK);
+    exit;
+  end;
+  PrepSize := 0;
+  AclSize := 0;
+  if not FileSize(Prep, PrepSize) then
+    PrepSize := -1;
+  if not FileSize(Acl, AclSize) then
+    AclSize := -1;
+  AppendUpgradeLog('extract_ok prepare_bytes=' + IntToStr(PrepSize) + ' acl_bytes=' + IntToStr(AclSize));
+  if (PrepSize <= 0) or (AclSize <= 0) then
+  begin
+    AppendUpgradeLog('extract_fail reason=zero_size');
+    MsgBox(
+      'Извлечённые скрипты пустые (0 байт). Установщик собран неверно.' + #13#10 +
+      'Журнал: ' + UpgradeLogPathTmp(),
+      mbError, MB_OK);
     exit;
   end;
   Result := True;
 end;
 
+function RunUpgradePrepare(): Boolean;
+var
+  ResultCode: Integer;
+  Params: string;
+  AppRoot: string;
+  PsExe: string;
+  Prep: string;
+begin
+  Result := False;
+  Prep := UpgradePreparePath();
+  AppRoot := ExpandConstant('{app}');
+  PsExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  if not FileExists(PsExe) then
+  begin
+    AppendUpgradeLog('powershell_missing=' + PsExe);
+    MsgBox('Не найден Windows PowerShell:' + #13#10 + PsExe, mbError, MB_OK);
+    exit;
+  end;
+  Params :=
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + Prep +
+    '" -Root "' + AppRoot +
+    '" -LogPath "' + UpgradeLogPathTmp() + '"';
+  AppendUpgradeLog('exec_begin powershell="' + PsExe + '"');
+  AppendUpgradeLog('exec_params_len=' + IntToStr(Length(Params)));
+  AppendUpgradeLog('exec_script="' + Prep + '" root="' + AppRoot + '"');
+  if not Exec(PsExe, Params, UpgradeScriptDir(), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    AppendUpgradeLog('exec_fail Win32/Exec returned false');
+    MsgBox(
+      'Не удалось запустить подготовку обновления Dauys (Exec).' + #13#10 +
+      'Права администратора не нужны.' + #13#10#13#10 +
+      'Журнал: ' + UpgradeLogPathTmp() + #13#10 +
+      UpgradeLogPathApp(),
+      mbError, MB_OK);
+    exit;
+  end;
+  AppendUpgradeLog('exec_exit_code=' + IntToStr(ResultCode));
+  if ResultCode <> 0 then
+  begin
+    AppendUpgradeLog('exec_fail nonzero_exit');
+    MsgBox(
+      'Подготовка обновления завершилась с ошибкой (код ' + IntToStr(ResultCode) + ').' + #13#10#13#10 +
+      '1. Закройте Dauys через значок в трее (Выйти).' + #13#10 +
+      '2. Подождите несколько секунд.' + #13#10 +
+      '3. Снова запустите этот установщик (без прав администратора).' + #13#10#13#10 +
+      'Журнал: ' + UpgradeLogPathTmp() + #13#10 +
+      UpgradeLogPathApp(),
+      mbError, MB_OK);
+    exit;
+  end;
+  AppendUpgradeLog('exec_ok');
+  Result := True;
+end;
+
+function PrepareUpgrade(): Boolean;
+begin
+  Result := False;
+  AppendUpgradeLog('marker=UPGRADE_PREPARE_V3 phase=PrepareUpgrade_enter');
+  AppendUpgradeLog('tmp=' + ExpandConstant('{tmp}'));
+  AppendUpgradeLog('app=' + ExpandConstant('{app}'));
+  if not ExtractUpgradeScripts() then
+    exit;
+  if not RunUpgradePrepare() then
+    exit;
+  UpgradePrepareDone := True;
+  AppendUpgradeLog('phase=PrepareUpgrade_ok');
+  Result := True;
+end;
+
 procedure PrepareUpgradeOrFail;
 begin
-  { Вызывается BeforeInstall для bin\dauys-agent.exe — сразу перед копированием файла. }
+  AppendUpgradeLog('phase=BeforeInstall_bin_exe');
+  if UpgradePrepareDone then
+  begin
+    AppendUpgradeLog('phase=BeforeInstall_skip_already_done');
+    exit;
+  end;
   if not PrepareUpgrade() then
     RaiseException(
-      'Не удалось подготовить замену dauys-agent.exe. ' +
-      'Закройте Dauys из трея и повторите. Журнал: %LOCALAPPDATA%\DauysAgent\upgrade-prepare.log'
-    );
+      'Подготовка обновления не выполнена — замена dauys-agent.exe отменена.' + #13#10 +
+      'Скрипт не запущен или завершился с ошибкой (до DeleteFile).' + #13#10 +
+      'Журнал: ' + UpgradeLogPathTmp());
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  { До CloseApplications / [Files]. Ранний проход + журнал. }
   NeedsRestart := False;
   Result := '';
+  AppendUpgradeLog('phase=PrepareToInstall');
+  UpgradePrepareDone := False;
   if not PrepareUpgrade() then
+  begin
     Result :=
-      'Обновление отменено: файл dauys-agent.exe занят или недоступен.' + #13#10 +
-      'Закройте Dauys из трея и повторите установку.' + #13#10 +
-      'Журнал: %LOCALAPPDATA%\DauysAgent\upgrade-prepare.log';
+      'Обновление остановлено до замены dauys-agent.exe:' + #13#10 +
+      'не удалось извлечь или запустить Prepare-DauysUpgrade.ps1.' + #13#10 +
+      'Журнал: ' + UpgradeLogPathTmp();
+    AppendUpgradeLog('phase=PrepareToInstall_abort');
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -148,14 +305,17 @@ var
 begin
   if CurStep = ssInstall then
   begin
-    { После старта install-фазы, до/около CloseApplications; финальный BeforeInstall ещё раз. }
-    if not PrepareUpgrade() then
-      RaiseException(
-        'Не удалось подготовить замену dauys-agent.exe. Закройте Dauys из трея и повторите.'
-      );
+    AppendUpgradeLog('phase=ssInstall');
+    if not UpgradePrepareDone then
+    begin
+      if not PrepareUpgrade() then
+        RaiseException(
+          'ssInstall: подготовка обновления не выполнена. Журнал: ' + UpgradeLogPathTmp());
+    end;
   end;
   if CurStep = ssPostInstall then
   begin
+    AppendUpgradeLog('phase=ssPostInstall');
     ExePath := ExpandConstant('{app}\bin\{#MyAppExeName}');
     VbsPath := ExpandConstant('{app}\bin\dauys-launch.vbs');
     Content :=
@@ -163,6 +323,13 @@ begin
       'sh.Run """' + ExePath + '""", 0, False' + #13#10;
     SaveStringToFile(VbsPath, Content, False);
   end;
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  UpgradePrepareDone := False;
+  Result := True;
+  Log('DauysUpgrade: InitializeSetup (SetupLogging=yes)');
 end;
 
 function InitializeUninstall(): Boolean;

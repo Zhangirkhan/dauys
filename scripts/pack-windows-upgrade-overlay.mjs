@@ -35,6 +35,7 @@ const INCLUDE = [
   "packaging/windows/VM-CHECKLIST.md",
   "scripts/build-agent.mjs",
   "scripts/build-windows-installer.mjs",
+  "scripts/verify-windows-installer-embed.mjs",
 ];
 
 rmSync(stage, { recursive: true, force: true });
@@ -55,10 +56,13 @@ writeFileSync(
     "",
     "Проблема: DeleteFile код 5 на bin\\dauys-agent.exe при обновлении поверх.",
     "",
-    "Причина: rename-probe был ложным (Windows: rename занятого exe OK, DeleteFile = код 5).",
-    "Inno как раз вызывает DeleteFile. ACL-ошибки на exe раньше глотались.",
-    "Исправление: стоп процессов сессии + ACL bin/helpers + реальное удаление exe до [Files];",
-    "журнал %LOCALAPPDATA%\\DauysAgent\\upgrade-prepare.log (маркер UPGRADE_PREPARE_V2).",
+    "Причина: rename-probe был ложным; плюс prepare мог не извлечься/не запуститься",
+    "  (upgrade-prepare.log пустой = PowerShell не писал; DeleteFile шёл без подготовки).",
+    "Исправление V3:",
+    "  - [Files] DestDir=dauys-upgrade + dontcopy + ExtractTemporaryFiles('dauys-upgrade\\*')",
+    "  - проверка FileExists/размера до Exec; abort до DeleteFile при сбое",
+    "  - журнал Inno+PS: {tmp}\\dauys-upgrade-prepare.log (и app log best-effort)",
+    "  - SetupLogging=yes + Log('DauysUpgrade: ...') + exec_exit_code",
     "",
     "1. Распакуйте ПОВЕРХ уже существующего дерева исходников на Windows, например:",
     "   C:\\src\\dauys-agent",
@@ -67,13 +71,13 @@ writeFileSync(
     "   pnpm install",
     "   pnpm build:agent:windows-installer",
     "3. Новый файл: dist\\windows-installer\\DauysSetup-x64.exe",
-    "4. На целевой VM запустите новый Setup поверх старой установки",
-    "   (токен/привязка сохраняются; прав администратора не нужно).",
-    "5. При сбое откройте upgrade-prepare.log — там процессы/ACL/delete.",
+    "4. Тест: Setup /LOG=\"%TEMP%\\dauys-setup.log\" поверх старой установки",
+    "5. Смотрите %TEMP%\\dauys-upgrade-prepare.log (из {tmp} копируйте сразу)",
+    "   и %LOCALAPPDATA%\\DauysAgent\\upgrade-prepare.log — должны быть строки inno + ps1",
+    "   с marker=UPGRADE_PREPARE_V3 до любой замены exe.",
     "",
-    "Ручная подготовка без пересборки (если Setup ещё старый):",
+    "Ручная подготовка:",
     "   powershell -NoProfile -ExecutionPolicy Bypass -File packaging\\windows\\Prepare-DauysUpgrade.ps1",
-    "   затем снова DauysSetup-x64.exe",
     "",
     "Секреты в оверлей не входят.",
     "",
@@ -90,6 +94,11 @@ function listFiles(dir, base = dir, acc = []) {
 }
 
 const files = listFiles(stage);
+const verifyReport = join(root, "dist/windows-installer/VERIFY-UPGRADE-EMBED.txt");
+if (existsSync(verifyReport)) {
+  cpSync(verifyReport, join(stage, "VERIFY-UPGRADE-EMBED.txt"));
+  files.push("VERIFY-UPGRADE-EMBED.txt");
+}
 writeFileSync(
   join(outDir, "OVERLAY-MANIFEST.txt"),
   files.sort().join("\n") + "\n",

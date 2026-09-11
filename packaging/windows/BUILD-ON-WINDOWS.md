@@ -40,18 +40,35 @@ pnpm build:agent:windows-installer
 
 ### Обновление поверх старой установки (исправление DeleteFile код 5)
 
-**Причина (доказано по коду Inno + Windows):** probe через `Move-Item` (rename) был ложным.
-Windows часто позволяет **переименовать** занятый/mapped `.exe`, но `DeleteFile` (именно его вызывает Inno
-при замене файла) даёт **код 5**. После `f587ce0` подготовка «успевала», а Setup всё равно падал на DeleteFile.
-Дополнительно ACL-repair на exe глотал ошибки (`catch {}` + `icacls /C` с кодом 1 = «успех»).
+**V3 — упаковка/вызов скрипта:** пустой `upgrade-prepare.log` после `9e5d796` значит
+PowerShell-подготовка не писала в лог (не извлечён/не запущен), а Inno всё равно шёл в DeleteFile.
 
-Установщик перед копированием `bin\dauys-agent.exe` (PrepareToInstall → ssInstall → BeforeInstall):
+Исправление:
 
-1. Останавливает только процессы Dauys **текущей сессии** (`dauys-agent`, tray, `dauys-launch.vbs`).
-2. Чинит ACL **только** у `%LOCALAPPDATA%\DauysAgent\bin` и `helpers` (миграция со старых ACL); ошибки на exe не глотаются.
-3. **Не** меняет ACL token / trust / ledger.
-4. Снимает readonly и **удаляет** старый exe (реальный DeleteFile). Rename без успешного delete = провал.
-5. Журнал без секретов: `%LOCALAPPDATA%\DauysAgent\upgrade-prepare.log` (маркер `UPGRADE_PREPARE_V2`).
+1. Скрипты в `[Files]` как `DestDir: dauys-upgrade` + `dontcopy` + `ExtractTemporaryFiles('dauys-upgrade\*')`
+   (однозначный DestDir, не путать с `{app}\helpers`).
+2. Inno пишет первую строку журнала **до** Exec (`{tmp}\dauys-upgrade-prepare.log` + app log).
+3. `FileExists` + размер > 0; иначе abort **до** замены exe.
+4. `SetupLogging=yes` + `Log('DauysUpgrade: …')` + `exec_exit_code=`.
+5. Маркер `UPGRADE_PREPARE_V3` в логе (строки `inno` и `ps1`).
+
+Проверка встройки: `node scripts/verify-windows-installer-embed.mjs` (нужен ISCC).
+
+Тест на VM:
+
+```powershell
+# лог Setup
+.\dist\windows-installer\DauysSetup-x64.exe /LOG="$env:TEMP\dauys-setup.log"
+# сразу после/во время: %TEMP%\...\dauys-upgrade-prepare.log и
+# %LOCALAPPDATA%\DauysAgent\upgrade-prepare.log — не пустые, есть UPGRADE_PREPARE_V3
+```
+
+Установщик перед копированием `bin\dauys-agent.exe`:
+
+1. Останавливает процессы Dauys **текущей сессии**.
+2. Чинит ACL только `bin` / `helpers` (не token/trust/ledger).
+3. Реально удаляет старый exe (не rename-probe).
+4. При любом сбое extract/Exec — останавливается с ошибкой до DeleteFile.
 
 Пересборка после получения оверлея или нового ZIP:
 
